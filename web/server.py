@@ -1141,7 +1141,8 @@ def live_power_page():
             if _mm.get("retired_at") and _mm["retired_at"] <= _today_sd:
                 continue
             if (_mm.get("soc_sensor") or _mm.get("inverter_power_sensor")
-                    or _mm.get("device_power_sensor") or _mm.get("pv_power_sensor")):
+                    or _mm.get("device_power_sensor") or _mm.get("pv_power_sensor")
+                    or _mm.get("outdoor_temp_sensor")):
                 has_sub_devices = True
                 break
     except Exception:
@@ -1269,6 +1270,19 @@ def _build_soc_response(soc_sensors, ha_client):
                         v, unit, info.get("power_unit"), info.get("power_invert"))
         except (ValueError, TypeError):
             pass
+        # A heat pump's outdoor temperature, °C (22 Nov 2026).
+        temp_c = None
+        try:
+            if ha_client and info.get("temp_entity"):
+                import overview_days as _od_t
+                _tu = ""
+                try:
+                    _tu = (ha_client.get_attributes(info["temp_entity"]) or {}).get("unit_of_measurement", "")
+                except Exception:
+                    pass
+                temp_c = _od_t.to_celsius(ha_client.get_state(info["temp_entity"]), _tu)
+        except (ValueError, TypeError):
+            pass
         # PV / solar generation — always positive, auto unit, no invert.
         try:
             if ha_client and info.get("pv_entity"):
@@ -1290,7 +1304,9 @@ def _build_soc_response(soc_sensors, ha_client):
             "soc_entity":   info.get("soc_entity"),
             "power_entity": info.get("power_entity"),
             "pv_entity":    info.get("pv_entity"),
+            "temp_entity":  info.get("temp_entity"),
             "soc":          soc_val,
+            "temp_c":       temp_c,
             "power_kw":     power_kw,
             "pv_kw":        pv_kw,
         }
@@ -1422,9 +1438,10 @@ def api_power():
                         "v2x":          bool(meta.get("v2x_capable")),
                     }
             elif _is_meter_type(meta, m_id, "heat_pump"):
-                if meta.get("device_power_sensor"):
+                if meta.get("device_power_sensor") or meta.get("outdoor_temp_sensor"):
                     soc_sensors[m_id] = {
                         "soc_entity":   None,
+                        "temp_entity":  meta.get("outdoor_temp_sensor"),
                         "power_entity": meta.get("device_power_sensor"),
                         "power_invert": bool(meta.get("device_power_invert", False)),
                         "power_unit":   meta.get("device_power_unit") or None,
@@ -1652,10 +1669,11 @@ def api_overview_days():
                 continue
             power = meta.get("inverter_power_sensor") or meta.get("device_power_sensor")
             soc = meta.get("soc_sensor")
-            if not (power or soc or meta.get("pv_power_sensor")):
+            temp = meta.get("outdoor_temp_sensor")
+            if not (power or soc or temp or meta.get("pv_power_sensor")):
                 continue                              # no card
             out_too = _is_meter_type(meta, mid, "battery") or bool(meta.get("v2x_capable"))
-            samples = store.get_sub_meter_history(mid, hours=hours) if (power or soc) else []
+            samples = store.get_sub_meter_history(mid, hours=hours) if (power or soc or temp) else []
             if power:
                 entry = {"source": "power", "out": out_too,
                          "energy": _od.sample_lines(samples, y0, t0, t1, now, out_too=out_too)}
@@ -1665,6 +1683,9 @@ def api_overview_days():
                                                        y0, t0, t1, bm, names=("in",), cols=("imp_kwh",))}
             if soc:
                 entry["soc"] = _od.soc_lines(samples, y0, t0, t1, now)
+            if temp:
+                # a heat pump's outdoor temperature, drawn on the chart's second axis
+                entry["temp"] = _od.soc_lines(samples, y0, t0, t1, now, key="temp_c")
             devices[mid] = entry
         return jsonify({"today": t0.date().isoformat(),
                         "now_min": _od.minutes(now, t0),

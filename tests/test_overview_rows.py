@@ -135,7 +135,7 @@ class ThePage(unittest.TestCase):
         i = PAGE.index("function buildSocCard(")
         body = PAGE[i:PAGE.index("\n}\n", i)]
         self.assertIn("'<div class=\"battery-icon v\"", body)
-        self.assertIn("gaugeSection = '<div class=\"dev-gauges\">' + battSection + _invHtml + pvGauge + '</div>';", body)
+        self.assertIn("gaugeSection = '<div class=\"dev-gauges\">' + battSection + _invHtml + pvGauge + tempGauge + '</div>';", body)
         self.assertIn("fill.style.height = (pct !== null ? pctVal + '%' : '0%');", PAGE)
 
     def test_the_meter_card_is_titled_and_its_gauge_labelled_as_a_devices(self):

@@ -1482,8 +1482,8 @@ function _ovToolsText(){
 // battery with an SoC sensor switches between its SoC and its energy; the choice is kept per card.
 var _tdData = null;
 var _tdBattView = {{ overview_battery_view|default({})|tojson }};
-var TD_COL = {imp: '#ff6b6b', exp: '#00d4aa', 'in': '#7c6af7', out: '#00d4aa', soc: '#f5b942'};
-var TD_NAME = {imp: 'Import', exp: 'Export', 'in': 'In', out: 'Out', soc: 'SoC'};
+var TD_COL = {imp: '#ff6b6b', exp: '#00d4aa', 'in': '#7c6af7', out: '#00d4aa', soc: '#f5b942', temp: '#f59e0b'};
+var TD_NAME = {imp: 'Import', exp: 'Export', 'in': 'In', out: 'Out', soc: 'SoC', temp: 'Outdoor'};
 // what leaves — export, a battery's or a car's out — is drawn below zero and written negative (22 Nov 2026, the user)
 var TD_NEG = {exp: true, out: true};
 
@@ -1502,6 +1502,7 @@ function _tdAt(pts, m){
 function _tdFmt(v, unit, neg){
   if (v === null || v === undefined) return '—';
   if (unit === '%') return Math.round(v) + '%';
+  if (unit === '°C') return v.toFixed(1) + '°C';
   var t = v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
   return neg && v > 0 ? '−' + t : t;
 }
@@ -1518,8 +1519,20 @@ function _tdSeries(d, kind, meterId, view){
   if (view === 'soc' && dev.soc)
     return {unit: '%', top: 100, lines: [{name: 'soc', today: dev.soc.today || [], yesterday: dev.soc.yesterday || []}]};
   var e = dev.energy || {};
-  return {unit: 'kWh', lines: (dev.out ? ['in', 'out'] : ['in']).map(function(n){
+  var ser = {unit: 'kWh', lines: (dev.out ? ['in', 'out'] : ['in']).map(function(n){
     return {name: n, today: ((e.today || {})[n]) || [], yesterday: ((e.yesterday || {})[n]) || []}; })};
+  // a heat pump's outdoor temperature, on a second axis of its own (22 Nov 2026, the user)
+  if (dev.temp) ser.y2 = {name: 'temp', unit: '°C', today: dev.temp.today || [], yesterday: dev.temp.yesterday || []};
+  return ser;
+}
+// The second axis's range: the temperatures' own, a degree either side, at least 4 degrees across. Pure.
+function _tdY2Range(y2){
+  var lo = Infinity, hi = -Infinity;
+  y2.today.concat(y2.yesterday).forEach(function(p){ if (p[1] < lo) lo = p[1]; if (p[1] > hi) hi = p[1]; });
+  if (lo === Infinity) return null;
+  lo = Math.floor(lo - 1); hi = Math.ceil(hi + 1);
+  if (hi - lo < 4) { var mid = (hi + lo) / 2; lo = Math.floor(mid - 2); hi = lo + 4; }
+  return [lo, hi];
 }
 function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
   var dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
@@ -1567,6 +1580,26 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
   }
   ser.lines.forEach(function(l){ line(l.yesterday, TD_COL[l.name], 0.3, 1.5, TD_NEG[l.name] ? -1 : 1); });
   ser.lines.forEach(function(l){ line(l.today, TD_COL[l.name], 1, 2, TD_NEG[l.name] ? -1 : 1); });
+  // the second axis: the outdoor temperature over the plot's whole height, dashed, its scale on the right
+  var r2 = ser.y2 ? _tdY2Range(ser.y2) : null, Y2 = null;
+  if (r2) {
+    Y2 = function(v){ return pad + (h - pad - padB) * ((r2[1] - v) / (r2[1] - r2[0])); };
+    g.setLineDash([4, 3]);
+    [[ser.y2.yesterday, 0.3, 1.5], [ser.y2.today, 1, 1.5]].forEach(function(a){
+      if (!a[0].length) return;
+      g.globalAlpha = a[1]; g.strokeStyle = TD_COL.temp; g.lineWidth = a[2];
+      g.beginPath();
+      a[0].forEach(function(p, i){ if (i) g.lineTo(X(p[0]), Y2(p[1])); else g.moveTo(X(p[0]), Y2(p[1])); });
+      g.stroke();
+      g.globalAlpha = 1;
+    });
+    g.setLineDash([]);
+    if (big) {
+      g.fillStyle = TD_COL.temp; g.font = '11px sans-serif'; g.textAlign = 'right'; g.textBaseline = 'middle';
+      g.fillText(r2[1] + '°C', w - pad, Y2(r2[1]) + 6);
+      g.fillText(r2[0] + '°C', w - pad, Y2(r2[0]) - 6);
+    }
+  }
   if (nowMin != null) {                                                 // where today has got to
     g.fillStyle = 'rgba(128,128,128,0.5)';
     g.fillRect(Math.round(X(nowMin)), y0 - 2, 1, 4);
@@ -1583,6 +1616,13 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
         g.beginPath(); g.arc(X(hoverMin), Y(sign * v), 2.5, 0, 2 * Math.PI); g.fill();
         g.globalAlpha = 1;
       });
+    });
+    if (Y2) [[ser.y2.yesterday, 0.45], [hoverMin <= nowMin ? ser.y2.today : [], 1]].forEach(function(pa){
+      var v = _tdAt(pa[0], hoverMin);
+      if (v === null || !pa[0].length) return;
+      g.globalAlpha = pa[1]; g.fillStyle = TD_COL.temp;
+      g.beginPath(); g.arc(X(hoverMin), Y2(v), 2.5, 0, 2 * Math.PI); g.fill();
+      g.globalAlpha = 1;
     });
   }
 }
@@ -1604,6 +1644,12 @@ function _tdHover(el, e){
     html += '<div><span style="color:' + TD_COL[l.name] + '">●</span> ' + TD_NAME[l.name] + ' <b>'
       + _tdFmt(t, st.ser.unit, neg) + '</b> <span class="m">· yday ' + _tdFmt(y, st.ser.unit, neg) + '</span></div>';
   });
+  if (st.ser.y2) {
+    var y2 = st.ser.y2;
+    html += '<div><span style="color:' + TD_COL.temp + '">●</span> ' + TD_NAME.temp + ' <b>'
+      + _tdFmt(m <= st.now ? _tdAt(y2.today, m) : null, '°C') + '</b> <span class="m">· yday '
+      + _tdFmt(_tdAt(y2.yesterday, m), '°C') + '</span></div>';
+  }
   tip.innerHTML = html;
   tip.style.display = 'block';
   var tw = tip.offsetWidth, th = tip.offsetHeight;
@@ -1647,6 +1693,14 @@ function _tdRender(el){
     sp.querySelector('span').textContent = _tdFmt(y, ser.unit, TD_NEG[l.name]);
     legend.appendChild(sp);
   });
+  if (ser.y2) {
+    var l2 = ser.y2, sp2 = document.createElement('span');
+    sp2.title = 'The outdoor temperature: now, and yesterday at this time';
+    sp2.innerHTML = '<i style="background:' + TD_COL.temp + '"></i>' + TD_NAME.temp + ' <b></b> · yday <span></span>';
+    sp2.querySelector('b').textContent = _tdFmt(_tdAt(l2.today, now), '°C');
+    sp2.querySelector('span').textContent = _tdFmt(_tdAt(l2.yesterday, now), '°C');
+    legend.appendChild(sp2);
+  }
   var dm = _tdData.day_min || {};
   el._td = {ser: ser, xmax: Math.max(dm.today || 1440, dm.yesterday || 1440), now: now};
   _tdDraw(el.querySelector('canvas'), ser, el._td.xmax, now);
@@ -2380,6 +2434,24 @@ function _getInvMax(mid) { return _invMaxKw[mid] || 5.0; }
 function _setInvMax(mid, kw) { _invMaxKw[mid] = Math.max(_getInvMax(mid), kw); }
 
 var _pvMaxKw = {};  // per-meter PV gauge scale, keyed by meter_id
+// The outdoor temperature's arc, from −10 °C (empty) to 30 °C (full). Pure.
+var TEMP_LO = -10, TEMP_HI = 30;
+function _tempFrac(t){ return Math.max(0, Math.min(1, (t - TEMP_LO) / (TEMP_HI - TEMP_LO))); }
+function setTempGauge(meterId, t) {
+  var arc = document.getElementById('temp-arc-' + meterId), el = document.getElementById('temp-c-' + meterId);
+  if (!arc) return;
+  var L = 113.1;
+  try { var _l = arc.getTotalLength(); if (_l && _l > 1) L = _l; } catch (e) {}
+  if (t === null || t === undefined) {
+    arc.style.strokeDasharray = '0 ' + L;
+    if (el) el.textContent = '—';
+    return;
+  }
+  var len = _tempFrac(t) * L;
+  arc.style.strokeDasharray = len + ' ' + (L - len);
+  if (el) el.textContent = t.toFixed(1) + '°';
+}
+
 function setPvGauge(meterId, pkw) {
   var arc  = document.getElementById('pv-arc-' + meterId);
   var kwEl = document.getElementById('pv-kw-' + meterId);
@@ -2560,9 +2632,23 @@ function buildSocCard(meterId, info) {
       '</div>';
   }
 
+  // A heat pump's outdoor temperature (22 Nov 2026, the user): a gauge the PV dial's shape, −10 to 30 °C.
+  var tempGauge = '';
+  if (isHeatPump && info.temp_entity) {
+    tempGauge =
+      '<div class="dev-gauge" id="temp-gauge-' + meterId + '">' +
+        '<div class="dev-gauge-label">🌡️ Outdoor</div>' +
+        '<div class="pv-gauge-wrap"><svg viewBox="0 0 90 54" xmlns="http://www.w3.org/2000/svg">' +
+          '<path d="M 9 48 A 36 36 0 0 1 81 48" class="gauge-arc-bg" fill="none" stroke="#2a2d3a" stroke-width="8" stroke-linecap="round"/>' +
+          '<path id="temp-arc-' + meterId + '" d="M 9 48 A 36 36 0 0 1 81 48" fill="none" stroke="' + TD_COL.temp + '" stroke-width="8" stroke-linecap="round" stroke-dasharray="0 113" stroke-dashoffset="0"/>' +
+          '<text x="45" y="42" font-size="14" font-weight="700" fill="' + TD_COL.temp + '" text-anchor="middle" id="temp-c-' + meterId + '">—</text>' +
+        '</svg></div>' +
+      '</div>';
+  }
+
   // The battery's level and the gauges side by side on one row, the gauges the same size (22 Nov 2026, the user).
-  if (battSection || _invHtml || pvGauge)
-    gaugeSection = '<div class="dev-gauges">' + battSection + _invHtml + pvGauge + '</div>';
+  if (battSection || _invHtml || pvGauge || tempGauge)
+    gaugeSection = '<div class="dev-gauges">' + battSection + _invHtml + pvGauge + tempGauge + '</div>';
 
   return '<div class="soc-card expandable-card" id="soc-card-' + meterId + '" data-ov-card="device-' + meterId + '" data-type="' + type + '" data-v2x="' + v2x + '">' +
     '<button class="expand-btn" title="Expand" onclick="_expandPower(this)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">' +
@@ -2787,6 +2873,9 @@ function updateSocCards(socSensors) {
       if (info.pv_entity) {
         setTimeout(function() { setPvGauge(mid, info.pv_kw); }, 0);
       }
+      if (info.temp_entity) {
+        setTimeout(function() { setTempGauge(mid, info.temp_c); }, 0);
+      }
     } else {
       // Update battery fill — only for battery type cards
       var cardEl = document.getElementById('soc-card-' + mid);
@@ -2807,6 +2896,9 @@ function updateSocCards(socSensors) {
       }
       if (info.pv_entity) {
         setPvGauge(mid, info.pv_kw);
+      }
+      if (info.temp_entity) {
+        setTempGauge(mid, info.temp_c);
       }
     }
   });

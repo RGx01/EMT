@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS meters (
     inverter_power_sensor TEXT,            -- HA entity_id for inverter power W/kW (informational)
     device_power_sensor TEXT,              -- HA entity_id for EV/heat pump power W/kW (informational)
     pv_power_sensor     TEXT,              -- HA entity_id for battery PV/solar power W/kW (informational)
+    outdoor_temp_sensor TEXT,              -- HA entity_id for a heat pump's outdoor temperature (informational)
     retired_at          TEXT,              -- ISO date from which this meter is retired (NULL = active)
     retired_reason      TEXT,              -- optional note e.g. "Device replaced", "Moved property"
     FOREIGN KEY (config_period_id) REFERENCES config_periods(id),
@@ -420,7 +421,8 @@ CREATE TABLE IF NOT EXISTS sub_meter_history (
     captured_at TEXT    NOT NULL,  -- UTC ISO
     meter_id    TEXT    NOT NULL,  -- battery sub-meter ID
     soc_pct     REAL,              -- state of charge 0-100, NULL if no SoC sensor
-    inverter_kw REAL               -- inverter power kW, positive=charging, negative=discharging, NULL if no sensor
+    inverter_kw REAL,              -- inverter power kW, positive=charging, negative=discharging, NULL if no sensor
+    temp_c      REAL               -- a heat pump's outdoor temperature, °C, NULL if no sensor (22 Nov 2026)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sub_meter_history_time ON sub_meter_history (captured_at);
@@ -1507,6 +1509,7 @@ class BlockStore:
         _ds_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(dispatch_slots)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dispatch_slots'").fetchone() else set()
         _dh_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(dispatch_history)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dispatch_history'").fetchone() else set()
         _ph_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(power_history)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='power_history'").fetchone() else set()
+        _smh_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(sub_meter_history)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sub_meter_history'").fetchone() else set()
         _mc_cost_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(measured_cost)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='measured_cost'").fetchone() else set()
 
         for _col, _tbl, _defn, _col_set in [
@@ -1526,6 +1529,9 @@ class BlockStore:
             ("inverter_power_sensor","meters",         "TEXT",               _m_cols),
             ("device_power_sensor",  "meters",         "TEXT",               _m_cols),
             ("pv_power_sensor",      "meters",         "TEXT",               _m_cols),
+            # ── a heat pump's outdoor temperature, on its Overview card (22 Nov 2026)
+            ("outdoor_temp_sensor",  "meters",         "TEXT",               _m_cols),
+            ("temp_c",               "sub_meter_history", "REAL",            _smh_cols),
             ("retired_at",            "meters",         "TEXT",               _m_cols),
             ("retired_reason",        "meters",         "TEXT",               _m_cols),
             ("supplier",              "config_periods",  "TEXT",              _cp_cols),
@@ -2717,13 +2723,14 @@ class BlockStore:
 
     def append_sub_meter_history(self, captured_at: str, meter_id: str,
                                 soc_pct: float | None,
-                                inverter_kw: float | None) -> None:
-        """Append a battery history row for one battery meter."""
+                                inverter_kw: float | None,
+                                temp_c: float | None = None) -> None:
+        """Append one device's sample: its SoC, its power, and a heat pump's outdoor temperature."""
         with self._conn:
             self._conn.execute(
-                """INSERT INTO sub_meter_history (captured_at, meter_id, soc_pct, inverter_kw)
-                   VALUES (?, ?, ?, ?)""",
-                (captured_at, meter_id, soc_pct, inverter_kw)
+                """INSERT INTO sub_meter_history (captured_at, meter_id, soc_pct, inverter_kw, temp_c)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (captured_at, meter_id, soc_pct, inverter_kw, temp_c)
             )
 
     def prune_sub_meter_history(self, hours: int = 48) -> int:
@@ -2741,7 +2748,7 @@ class BlockStore:
         cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
                   - timedelta(hours=hours)).isoformat()
         rows = self._conn.execute(
-            """SELECT captured_at, soc_pct, inverter_kw
+            """SELECT captured_at, soc_pct, inverter_kw, temp_c
                FROM sub_meter_history
                WHERE meter_id = ? AND captured_at >= ?
                ORDER BY captured_at ASC""",
@@ -6135,6 +6142,7 @@ class BlockStore:
             dev_invert   = 1 if meta.get("device_power_invert") else 0
             dev_pwr_s   = meta.get("device_power_sensor")
             pv_pwr_s    = meta.get("pv_power_sensor")
+            temp_s      = meta.get("outdoor_temp_sensor")
 
             postcode_src = meta.get("postcode_source")
             cur = self._conn.execute(
@@ -6144,8 +6152,8 @@ class BlockStore:
                         power_sensor, power_source, postcode_prefix, postcode_source, v2x_capable,
                         meter_type, soc_sensor, inverter_power_sensor, inverter_power_invert,
                         device_power_sensor, pv_power_sensor, rate_source, power_invert,
-                        device_power_invert)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        device_power_invert, outdoor_temp_sensor)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(config_period_id, meter_id) DO UPDATE SET
                        is_sub_meter            = excluded.is_sub_meter,
                        parent_meter_id         = excluded.parent_meter_id,
@@ -6166,12 +6174,13 @@ class BlockStore:
                        device_power_invert     = excluded.device_power_invert,
                        device_power_sensor     = excluded.device_power_sensor,
                        pv_power_sensor         = excluded.pv_power_sensor,
+                       outdoor_temp_sensor     = excluded.outdoor_temp_sensor,
                        retired_at              = COALESCE(meters.retired_at, excluded.retired_at),
                        retired_reason          = COALESCE(meters.retired_reason, excluded.retired_reason)""",
                 (period_id, meter_id, is_sub, parent, device,
                  protected, inv_poss, power_s, power_src, postcode, postcode_src, v2x,
                  meter_type, soc_s, inv_pwr_s, inv_invert, dev_pwr_s, pv_pwr_s, rate_src, pwr_invert,
-                 dev_invert)
+                 dev_invert, temp_s)
             )
             meter_row_id = cur.lastrowid or self._conn.execute(
                 "SELECT id FROM meters WHERE config_period_id=? AND meter_id=?",
@@ -6605,6 +6614,8 @@ class BlockStore:
                     meta["device_power_sensor"] = m["device_power_sensor"]
                 if m["pv_power_sensor"]:
                     meta["pv_power_sensor"] = m["pv_power_sensor"]
+                if "outdoor_temp_sensor" in m.keys() and m["outdoor_temp_sensor"]:
+                    meta["outdoor_temp_sensor"] = m["outdoor_temp_sensor"]
                 if m["retired_at"]:
                     meta["retired_at"] = m["retired_at"]
                 if m["retired_reason"]:
