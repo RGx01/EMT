@@ -10,7 +10,8 @@ internal name for everything before the first public release and never appears i
 - **A hidden Agile card comes back up to date.** Hiding an Agile card stopped EMT fetching its prices, so
   shown again it was a day behind, and the link at the foot of the page could fail to bring it back at all
   until a hard refresh. EMT now keeps both directions' prices whatever is hidden — hiding only hides — and
-  the page never reuses an old answer from the browser's cache.
+  the page never reuses an old answer from the browser's cache. In Safari a card shown again, Agile or any
+  other alone in its row, stayed invisible until the page was reloaded; it appears at once now.
 - **Usage Stats: zoom.** A bar in the data table's heading is a window on the chart: drag either end to zoom
   from that side, the middle to move along, ↺ to see everything again. The table follows it.
 - **Usage Stats: Rate brackets' colours in month order.** Ordered by Month, the brackets' legend lost its colours
