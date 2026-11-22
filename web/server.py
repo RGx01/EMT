@@ -1621,6 +1621,53 @@ def api_power():
         return _error_reply(e)
 
 
+# The Overview's device steps, kept once finished (22 Nov 2026): a finished 5-minute step cannot change, and
+# every open tab asked for every step of two days once a minute. Keyed by what, which device, which day and the
+# database's generation (a restore is new data). Each call sums only the samples from the first unfinished step.
+_OV_DAY_CACHE = {}
+
+
+def _ov_step_of(row, step_min):
+    """A step's number: an energy step carries its own (`b`), a level point is [minute, value]."""
+    return row["b"] if isinstance(row, dict) else int(row[0] // step_min)
+
+
+def _ov_day_steps(key, kind, now, day0, day1, fetch, keep_days):
+    """The day's steps — `fetch(from_m)` for what is not kept yet, joined to what is. `kind` "energy" (a dict of
+    `steps` and `last_m`, BlockStore.get_sample_energy_steps) or "level" (points). A step is finished a minute
+    after its end; a day, ten minutes after its midnight (the segment across it has its end). Keys for days
+    not in `keep_days` are dropped."""
+    import overview_days as _odk
+    from datetime import timedelta as _tdk
+    step = _odk.STEP_MIN
+    try:
+        import engine as _eng_g
+        gen = getattr(_eng_g, "_db_generation", 0)
+    except Exception:
+        gen = 0
+    k = key + (gen,)
+    for old in [x for x in _OV_DAY_CACHE if x[2] not in keep_days or x[3] != gen]:
+        _OV_DAY_CACHE.pop(old, None)
+    kept = _OV_DAY_CACHE.get(k)
+    if kept and kept.get("done"):
+        return kept["value"]
+    final_b = kept["final_b"] if kept else -1
+    got = fetch((final_b + 1) * step)
+    if kind == "energy":
+        rows = (kept["rows"] if kept else []) + got["steps"]
+        value = {"steps": rows, "last_m": got["last_m"]}
+    else:
+        rows = (kept["rows"] if kept else []) + got
+        value = rows
+    if now >= day1 + _tdk(minutes=10):
+        _OV_DAY_CACHE[k] = {"done": True, "value": value}
+    else:
+        now_m = (now - day0).total_seconds() / 60.0
+        fb = max(final_b, int((now_m - 1.0) // step) - 1)
+        _OV_DAY_CACHE[k] = {"final_b": fb, "rows": [r for r in rows if _ov_step_of(r, step) <= fb]}
+    return value
+
+
 @app.route("/api/overview/days")
 def api_overview_days():
     """Today against yesterday on the Overview's cards (overview rows design, part 2): cumulative
@@ -1661,8 +1708,10 @@ def api_overview_days():
         except Exception as e:
             logger.debug("overview days: the half-hour in progress: %s", e)
 
-        hours = int((now - y0).total_seconds() // 3600) + 2
         devices = {}
+        upto = u(now)
+        days = (("yesterday", y0, t0), ("today", t0, t1))
+        keep = (u(y0), u(t0))
         for mid, d in meters.items():
             meta = (d or {}).get("meta") or {}
             if not meta.get("sub_meter"):
@@ -1673,19 +1722,26 @@ def api_overview_days():
             if not (power or soc or temp or meta.get("pv_power_sensor")):
                 continue                              # no card
             out_too = _is_meter_type(meta, mid, "battery") or bool(meta.get("v2x_capable"))
-            samples = store.get_sub_meter_history(mid, hours=hours) if (power or soc or temp) else []
             if power:
-                entry = {"source": "power", "out": out_too,
-                         "energy": _od.sample_lines(samples, y0, t0, t1, now, out_too=out_too)}
+                # summed in SQLite into 5-minute steps, yesterday's kept once its day is done (22 Nov 2026: the
+                # per-sample sum in Python took 0.44 s for three devices on a Mac, once a minute per open tab)
+                energy = {name: _od.energy_lines(_ov_day_steps(
+                              ("energy", mid, u(a)), "energy", now, a, b,
+                              lambda f, a=a, b=b: store.get_sample_energy_steps(mid, u(a), u(b), upto, from_m=f),
+                              keep), out_too=out_too) for name, a, b in days}
+                entry = {"source": "power", "out": out_too, "energy": energy}
             else:
                 entry = {"source": "half_hours", "out": False,
                          "energy": _od.half_hour_lines(store.get_half_hour_kwh(mid, u(y0), u(t1)),
                                                        y0, t0, t1, bm, names=("in",), cols=("imp_kwh",))}
-            if soc:
-                entry["soc"] = _od.soc_lines(samples, y0, t0, t1, now)
-            if temp:
-                # a heat pump's outdoor temperature, drawn on the chart's second axis
-                entry["temp"] = _od.soc_lines(samples, y0, t0, t1, now, key="temp_c")
+            for key, col, on in (("soc", "soc_pct", soc), ("temp", "temp_c", temp)):
+                # a battery's SoC; a heat pump's outdoor temperature, drawn on the chart's second axis
+                if on:
+                    entry[key] = {name: _ov_day_steps(
+                                      (col, mid, u(a)), "level", now, a, b,
+                                      lambda f, a=a, b=b, col=col: store.get_sample_level_steps(
+                                          mid, col, u(a), u(b), upto, from_m=f), keep)
+                                  for name, a, b in days}
             devices[mid] = entry
         ev_cap = None
         if any(_is_meter_type((d or {}).get("meta") or {}, m, "ev") for m, d in meters.items()):

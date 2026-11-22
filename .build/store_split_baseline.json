@@ -197,6 +197,8 @@
     "get_power_history",
     "get_provisional_sub_meter_blocks",
     "get_reconcile_candidates",
+    "get_sample_energy_steps",
+    "get_sample_level_steps",
     "get_settings",
     "get_settle_inputs",
     "get_settlement_detail",

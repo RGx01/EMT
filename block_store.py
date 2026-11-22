@@ -2758,6 +2758,77 @@ class BlockStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_sample_energy_steps(self, meter_id: str, day0: str, day1: str, upto: str,
+                                step_min: int = 5, gap_s: int = 300, from_m: float = 0.0) -> dict:
+        """One device's power samples summed in SQLite into `step_min` steps of one local day [day0, day1) —
+        the Overview's today-against-yesterday lines (overview_days.energy_lines), which summed every
+        sample in Python once a minute: 0.44 s for three devices' 50 hours on a Mac, seconds on a Pi.
+
+        Each segment between consecutive samples (power known, captured no later than `upto`) no more than
+        `gap_s` apart is the trapezoid of its ends — positive power in, negative out — and is the day's
+        its START falls in, its end held at `day1`. A step is its segments' END minute (since `day0`, to the
+        hundredth) // `step_min`. Per step and direction: the kWh, the first such segment's start minute and
+        the last one's end minute. `last_m`: the day's last sample's minute (None if none). All naive UTC.
+        `from_m`: only the steps of segments ending from that minute on — what a caller keeping the day's
+        finished steps still needs."""
+        from datetime import datetime as _dt, timedelta as _td
+        lo = (_dt.fromisoformat(day0) + _td(minutes=from_m) - _td(seconds=gap_s)).isoformat()
+        hi = min(upto, (_dt.fromisoformat(day1) + _td(seconds=gap_s)).isoformat())
+        rows = self._conn.execute(
+            """WITH s AS (
+                   SELECT julianday(captured_at) AS jt, inverter_kw AS k,
+                          LAG(julianday(captured_at)) OVER w AS jpt, LAG(inverter_kw) OVER w AS pk
+                   FROM sub_meter_history
+                   WHERE meter_id = :mid AND inverter_kw IS NOT NULL
+                     AND captured_at >= :lo AND captured_at <= :hi
+                   WINDOW w AS (ORDER BY captured_at)),
+               d AS (SELECT julianday(:day0) AS j0, julianday(:day1) AS j1),
+               e AS (
+                   SELECT ROUND((MIN(jt, j1) - j0) * 1440.0, 2) AS m,
+                          ROUND((jpt - j0) * 1440.0, 2) AS sm,
+                          (jt - jpt) * 86400.0 AS dt, k, pk
+                   FROM s, d WHERE jpt IS NOT NULL AND jpt >= j0 AND jpt < j1
+                     AND ROUND((MIN(jt, j1) - j0) * 1440.0, 2) >= :from_m),
+               a AS (
+                   SELECT m, sm,
+                          (MAX(pk, 0.0) + MAX(k, 0.0)) / 2.0 * dt / 3600.0 AS a_in,
+                          (MAX(-pk, 0.0) + MAX(-k, 0.0)) / 2.0 * dt / 3600.0 AS a_out
+                   FROM e WHERE dt > 0 AND dt <= :gap)
+               SELECT CAST(m / :step AS INTEGER) AS b,
+                      SUM(CASE WHEN a_in > 0 THEN a_in END) AS in_kwh,
+                      MIN(CASE WHEN a_in > 0 THEN sm END) AS in_start,
+                      MAX(CASE WHEN a_in > 0 THEN m END) AS in_end,
+                      SUM(CASE WHEN a_out > 0 THEN a_out END) AS out_kwh,
+                      MIN(CASE WHEN a_out > 0 THEN sm END) AS out_start,
+                      MAX(CASE WHEN a_out > 0 THEN m END) AS out_end
+               FROM a GROUP BY b ORDER BY b""",
+            {"mid": meter_id, "lo": lo, "hi": hi, "day0": day0, "day1": day1,
+             "gap": gap_s, "step": step_min, "from_m": from_m}).fetchall()
+        last = self._conn.execute(
+            "SELECT ROUND((julianday(MAX(captured_at)) - julianday(?)) * 1440.0, 2) FROM sub_meter_history "
+            "WHERE meter_id = ? AND inverter_kw IS NOT NULL AND captured_at >= ? AND captured_at < ? "
+            "AND captured_at <= ?", (day0, meter_id, day0, day1, upto)).fetchone()[0]
+        return {"steps": [dict(r) for r in rows], "last_m": last}
+
+    def get_sample_level_steps(self, meter_id: str, column: str, day0: str, day1: str, upto: str,
+                               step_min: int = 5, from_m: float = 0.0) -> list:
+        """A level one device's samples carry — `soc_pct` or `temp_c` — as [minute, value]: the last reading in
+        each `step_min` step of one local day [day0, day1) (minutes since `day0`, to the hundredth), readings
+        no later than `upto`, and from minute `from_m` on. All naive UTC."""
+        if column not in ("soc_pct", "temp_c"):
+            raise ValueError("column must be soc_pct or temp_c")
+        from datetime import datetime as _dt, timedelta as _td
+        lo = max(day0, (_dt.fromisoformat(day0) + _td(minutes=from_m)).isoformat())
+        rows = self._conn.execute(
+            "SELECT CAST(ROUND((julianday(captured_at) - julianday(:day0)) * 1440.0, 2) / :step AS INTEGER) AS b, "
+            "       ROUND((julianday(MAX(captured_at)) - julianday(:day0)) * 1440.0, 2) AS m, "
+            "       " + column + " AS v "
+            "FROM sub_meter_history WHERE meter_id = :mid AND " + column + " IS NOT NULL "
+            "AND captured_at >= :lo AND captured_at < :day1 AND captured_at <= :upto "
+            "GROUP BY b ORDER BY b",
+            {"mid": meter_id, "day0": day0, "day1": day1, "upto": upto, "step": step_min, "lo": lo}).fetchall()
+        return [[r["m"], round(float(r["v"]), 1)] for r in rows]
+
     def close(self) -> None:
         try:
             self._conn.close()
