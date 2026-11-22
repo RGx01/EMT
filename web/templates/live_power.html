@@ -124,7 +124,7 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
 .soc-card > .card-title, .power-card > .card-title { display: block; align-self: stretch !important; font-size: 12px;
   padding-right: 28px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
 .soc-card.expandable-card > .card-title { padding-right: 56px; }
-.power-card > .card-title { padding-right: 84px; }
+.power-card > .card-title, .ov-power-row .soc-card > .card-title { padding-right: 84px; }   /* hide, expand, compact */
 /* the gauge with its pill beside it */
 .lp-head { flex-wrap: wrap; }
 .lp-head .lp-pill { align-self: center; }
@@ -132,7 +132,13 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 14px; white-space: nowrap;
   background: var(--bg); border: 1px solid var(--border); color: var(--muted);
 }
-.billing-grid.compact .billing-rows { display: none; }
+/* compact costs: each card's title and total on one line, its period beneath (22 Nov 2026, the user: more compact) */
+.ov-costs-row.compact .billing-rows { display: none; }
+.ov-costs-row.compact .billing-card { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px;
+  padding: 10px 76px 10px 14px; }          /* clear of its compact and hide buttons */
+.ov-costs-row.compact .billing-card > .card-title { margin: 0; }
+.ov-costs-row.compact .billing-total { font-size: 18px; margin: 0; }
+.ov-costs-row.compact .billing-period { flex-basis: 100%; margin: 2px 0 0; }
 
 /* Today against yesterday (overview rows design, part 2): a small chart at the foot of the Live Power and device
    cards. The cards do not grow for it: the gauges and the battery level are smaller, and the chart takes the
@@ -937,12 +943,6 @@ function setMiniSource(enabled){
 {# Macro for a billing card #}
 {% macro billing_card(title, total, rows, period, card_id) %}
 <div class="billing-card" data-ov-card="{{ card_id }}">
-  {% if card_id == "today" %}
-  <button type="button" class="expand-btn ov-compact-btn" id="ov-compact-btn" style="right:40px;"
-          onclick="_ovSetCompact(!document.getElementById('ov-costs').classList.contains('compact'))">
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M3 8h10M3 12h6"/></svg>
-  </button>
-  {% endif %}
   <div class="card-title">{{ title }}</div>
   {% if total is not none %}
   <div class="billing-total" id="billing-total-{{ card_id }}">
@@ -968,7 +968,7 @@ function setMiniSource(enabled){
 <div class="live-power-page" id="ov-rows">
 <!-- Rows (overview rows design): each a fixed group of cards; the user orders the rows and the Power row's cards.
      The default order is the DOM's: power, grid, charge, agile. -->
-<div class="ov-row ov-power-row{% if overview_power_compact %} compact{% endif %}" data-ov-row="power" data-ov-row-label="Power">
+<div class="ov-row ov-power-row{% if overview_power_compact %} compact{% endif %}" data-ov-row="power" data-ov-row-label="Power" data-ov-compact="power">
 
 
   {% if has_power_sensor %}
@@ -978,10 +978,6 @@ function setMiniSource(enabled){
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"/>
       </svg>
-    </button>
-    <button class="expand-btn ov-compact-btn" id="ov-power-compact-btn" style="right:68px;"
-            onclick="_ovSetPowerCompact(!document.querySelector('.ov-power-row').classList.contains('compact'))">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5l5 4 5-4M3 11h10"/></svg>
     </button>
     <!-- titled as a device card is, with its gauge labelled, so the gauges line up across the row (22 Nov 2026,
          the user); the pill beside the gauge -->
@@ -1200,8 +1196,8 @@ function setMiniSource(enabled){
 {% endfor %}
 {% endif %}
 <!-- 6: the cost cards, a row like the others (22 Nov 2026, the user) -->
-<div class="ov-row ov-costs-row" data-ov-row="costs" data-ov-row-label="Costs">
-<div class="billing-grid{% if overview_costs_compact %} compact{% endif %}" id="ov-costs">
+<div class="ov-row ov-costs-row{% if overview_costs_compact %} compact{% endif %}" data-ov-row="costs" data-ov-row-label="Costs" data-ov-compact="costs">
+<div class="billing-grid" id="ov-costs">
   {{ billing_card("☀️ Today", today_total, today_rows, today_date, "today") }}
   {{ billing_card("📅 This Bill", month_total, month_rows, month_period, "month") }}
   {{ billing_card("📆 This Year", year_total, year_rows, year_period, "year") }}
@@ -1434,38 +1430,35 @@ function _ovArrangeTools(){
   });
 }
 
-// ── Compact power cards: the gauges only ──
-function _ovSetPowerCompact(on){
-  _ovSave({overview_power_compact: !!on}, function(){
-    var r = document.querySelector('.ov-power-row');
+// ── Compact rows: the power cards as gauges only, the cost cards as totals only ──
+// One button on every card of the row, the same icon wherever a row compacts; it shows what a click will do
+// (22 Nov 2026, the user).
+var _OV_COMPACT_IN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+  + '<path d="M5 2l3 3 3-3M5 14l3-3 3 3M2 8h12"/></svg>';
+var _OV_COMPACT_OUT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+  + '<path d="M5 5l3-3 3 3M5 11l3 3 3-3M2 8h12"/></svg>';
+var _OV_COMPACT_TEXT = {power: ['The power cards as gauges only', 'Show the power cards\' charts'],
+                        costs: ['The cost cards as totals only', 'Show the cost breakdowns']};
+function _ovSetRowCompact(key, on){
+  var body = {};
+  body['overview_' + key + '_compact'] = !!on;
+  _ovSave(body, function(){
+    var r = document.querySelector('.ov-row[data-ov-compact="' + key + '"]');
     if (r) r.classList.toggle('compact', !!on);
     _ovToolsText();
     window.dispatchEvent(new Event('resize'));
   });
 }
-
-// ── Compact costs: the cost cards' totals only ──
-function _ovSetCompact(on){
-  _ovSave({overview_costs_compact: !!on}, function(){
-    var g = document.getElementById('ov-costs');
-    if (g) g.classList.toggle('compact', !!on);
-    _ovToolsText();
+function _ovToolsText(){
+  document.querySelectorAll('.ov-row[data-ov-compact]').forEach(function(r){
+    var key = r.getAttribute('data-ov-compact'), on = r.classList.contains('compact');
+    var t = (_OV_COMPACT_TEXT[key] || ['Compact', 'Expand'])[on ? 1 : 0];
+    r.querySelectorAll('.ov-compact-btn').forEach(function(b){
+      b.innerHTML = on ? _OV_COMPACT_OUT : _OV_COMPACT_IN;
+      b.title = t; b.setAttribute('aria-label', t);
+    });
   });
 }
-// The compact switch on the Today card says what it will do.
-function _ovToolsText(){
-  var g = document.getElementById('ov-costs'), b = document.getElementById('ov-compact-btn');
-  if (g && b) {
-    var t = g.classList.contains('compact') ? 'Show the cost breakdowns' : 'Costs as totals only';
-    b.title = t; b.setAttribute('aria-label', t);
-  }
-  var r = document.querySelector('.ov-power-row'), pb = document.getElementById('ov-power-compact-btn');
-  if (r && pb) {
-    var pt = r.classList.contains('compact') ? 'Show the charts' : 'The power cards as gauges only';
-    pb.title = pt; pb.setAttribute('aria-label', pt);
-  }
-}
-_ovToolsText();
 </script>
 
 <!-- ── Billing Summary ── -->
@@ -1709,7 +1702,17 @@ function _ovDecorate(){
     b.innerHTML = _OV_ICON;
     b.onclick = function(){ _ovSet(el.getAttribute('data-ov-card'), true); };
     el.insertBefore(b, el.firstChild);
+    // a card in a row that compacts gets the row's compact button, left of its other buttons
+    var row = el.closest('.ov-row[data-ov-compact]');
+    if (row) {
+      var c = document.createElement('button');
+      c.className = 'expand-btn ov-compact-btn';
+      c.style.right = el.classList.contains('expandable-card') ? '68px' : '40px';
+      c.onclick = function(){ _ovSetRowCompact(row.getAttribute('data-ov-compact'), !row.classList.contains('compact')); };
+      el.insertBefore(c, el.firstChild);
+    }
   });
+  _ovToolsText();
 }
 function _ovFoot(){
   var foot = document.getElementById('ov-restore');

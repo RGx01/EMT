@@ -23,8 +23,9 @@ Rows of cards ([design record](../history/design/EMT-v5_overview_rows_design.md)
 device cards), Grid and carbon, Smart Charging, Agile import, Agile export, Costs — every row orderable, and the
 cards along each (22 Nov 2026, the user, after the record: the costs were fixed last and only the Power row's
 cards moved). The user's choices are settings beside `overview_hidden`: `overview_rows` (row order),
-`overview_card_order` (every row's cards, one list), `overview_costs_compact` (cost totals only; its switch is on
-the Today card), `overview_power_compact` (the power cards as gauges only; its switch is on the Meter card) and
+`overview_card_order` (every row's cards, one list), `overview_costs_compact` (cost totals only) and
+`overview_power_compact` (the power cards as gauges only) — each switched from a button on every card of its
+row, the same icon on both — and
 `overview_battery_view` ({card key: `soc` | `energy`}). Unlocked (the padlock), a row is dragged by its strip and a
 card along its row by its handle, with the pointer, so a finger works as a mouse does. The Power row is spread evenly: as few
 lines as fit at 220 px, then as even as they can be. In the Grid and carbon row a hidden card's neighbours fill
