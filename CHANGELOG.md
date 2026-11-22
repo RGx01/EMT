@@ -5,6 +5,12 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **The Agile cards show everything published.** They ran 24 hours either side of now, so once tomorrow's
+  prices were out (about 4pm) the last few hours to 23:00 tomorrow — the evening peak — were cut off. They now
+  run from 24 hours back to the last published half-hour.
+
 ## [2026.11.0b32] — 2026-11-22
 
 - **A hidden Agile card comes back up to date.** Hiding an Agile card stopped EMT fetching its prices, so

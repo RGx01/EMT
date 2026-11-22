@@ -2212,7 +2212,7 @@ function _agileDraw(ch){
   var dark = document.documentElement.getAttribute('data-theme') !== 'light';
   var txt = dark ? '#6b7080' : '#555566', grid = dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)';
   var list = _agilePrices(ch), color = ch === 'export' ? _agileExportColor : _agileColor;
-  var now = _agileMs(_agile.now), t0 = now - 24 * 3600000, span = 48 * 3600000;
+  var now = _agileMs(_agile.now), sp = _agileSpan(_agilePrices(ch), now), t0 = sp[0], span = sp[1];
   var pw = _agilePowerSeries(typeof _phData !== 'undefined' ? _phData : [], ch, t0, now, AGILE_PW_BUCKET);
   var PAD_L = AGILE_PAD_L, PAD_R = pw.length ? AGILE_PAD_R : 0, PAD_T = 12, PAD_B = 24, CW = W - PAD_L - PAD_R, CH = H - PAD_T - PAD_B;
   var all = list.map(function(x){ return x[1]; });
@@ -2232,7 +2232,7 @@ function _agileDraw(ch){
   }
   // a bar a half-hour
   var lo = Math.min.apply(null, all.concat([0])), hi = Math.max.apply(null, all.concat([1]));
-  var bw = Math.max(1, CW / 96 - 1);
+  var bw = Math.max(1, CW / (span / 1800000) - 1);         // a half-hour's width
   list.forEach(function(p){
     var ms = _agileMs(p[0]), top = Math.min(y(p[1]), y(0)), h = Math.abs(y(p[1]) - y(0));
     ctx.globalAlpha = ms + 1800000 <= now ? 0.45 : 1;          // the past fainter
@@ -2279,12 +2279,19 @@ function _agileCheapest(list, now, dearest){
   }
   return best;
 }
-// What the footer says. The prices sent stop 24 h ahead, the chart's edge, so reaching it means tomorrow's are
-// in, not that they stop there.
+// The chart's span: from 24 h back to the end of the last published half-hour — everything published, to 23:00
+// tomorrow once tomorrow's are out (22 Nov 2026, the user; it was 24 h either side of now) — and at least an hour
+// past now. [t0, span] in ms. Pure.
+function _agileSpan(list, now){
+  var t0 = now - 24 * 3600000, end = now + 3600000;
+  if (list.length) end = Math.max(end, _agileMs(list[list.length - 1][0]) + 1800000);
+  return [t0, end - t0];
+}
+// What the footer says: tomorrow's are in once the prices reach 22:00 tomorrow (they run to 23:00, local).
 function _agileStatus(list, now){
   if (!list.length) return '';
-  var last = _agileMs(list[list.length - 1][0]) + 1800000;
-  if (last >= now + 24 * 3600000 - 1800000) return 'Tomorrow\u2019s published';
+  var last = _agileMs(list[list.length - 1][0]) + 1800000, d = new Date(now);
+  if (last >= new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 22, 0).getTime()) return 'Tomorrow\u2019s published';
   return 'Published to ' + _agileHHMM(last) + ' \u00b7 tomorrow\u2019s from about 4pm';
 }
 // An hour's name: its time, and "tomorrow" if it is not today
@@ -2364,10 +2371,10 @@ _AGILE_CHS.forEach(function(ch){
   if (!cv) return;
   cv.addEventListener('mousemove', function(e){
     if (!_agile) return;
-    var r = cv.getBoundingClientRect(), now = _agileMs(_agile.now), t0 = now - 24 * 3600000;
+    var r = cv.getBoundingClientRect(), now = _agileMs(_agile.now), sp = _agileSpan(_agilePrices(ch), now), t0 = sp[0];
     var pw = _agilePowerSeries(typeof _phData !== 'undefined' ? _phData : [], ch, t0, now, AGILE_PW_BUCKET);
     var padR = pw.length ? AGILE_PAD_R : 0;
-    var ms = t0 + (e.clientX - r.left - AGILE_PAD_L) / (r.width - AGILE_PAD_L - padR) * 48 * 3600000;
+    var ms = t0 + (e.clientX - r.left - AGILE_PAD_L) / (r.width - AGILE_PAD_L - padR) * sp[1];
     var p = _agileAt(_agilePrices(ch), ms);
     if (p == null) { tip.style.display = 'none'; return; }
     var s = Math.floor(ms / 1800000) * 1800000;

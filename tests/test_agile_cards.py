@@ -299,7 +299,7 @@ class TheCards(unittest.TestCase):
                     return PAGE[i:j + 1]
                 j += 1
         js = "\n".join(fn(n) for n in ("_agileMs", "_agileHHMM", "_agileCheapest", "_agileShown", "_agileExportColor",
-                                           "_agileStatus", "_agileWhen")) \
+                                           "_agileStatus", "_agileWhen", "_agileSpan")) \
             + "\nconsole.log(JSON.stringify(" + expr + "));"
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.js")
@@ -334,9 +334,29 @@ class TheCards(unittest.TestCase):
     def _status(self, last, now):
         return self._run("_agileStatus([['%s', 1]], _agileMs('%s'))" % (last, now))
 
-    def test_prices_reaching_the_charts_edge_mean_tomorrows_are_in(self):
-        # sent to 17:00 tomorrow only because the chart stops 24 h ahead: not "Published to 17:30"
-        self.assertEqual(self._status("2026-11-07T17:00:00", "2026-11-06T17:14:00"), "Tomorrow\u2019s published")
+    def test_prices_to_late_tomorrow_mean_tomorrows_are_in(self):
+        # everything published is sent now (22 Nov 2026): to 23:00 tomorrow, its last half-hour 22:30
+        self.assertEqual(self._status("2026-11-07T22:30:00", "2026-11-06T17:14:00"), "Tomorrow\u2019s published")
+
+    def test_the_chart_runs_to_the_last_published_half_hour(self):
+        # 22 Nov 2026, the user: "show everything published" — it was 24 h either side of now, so tomorrow's evening
+        # (to 23:00) was cut off after 16:00
+        got = self._run("(function(){ var now=_agileMs('2026-11-06T19:30:00');"
+                        " var s=_agileSpan([['2026-11-06T00:00:00',1],['2026-11-07T22:30:00',2]], now);"
+                        " return [(now-s[0])/3600000, (s[0]+s[1]-now)/3600000]; })()")
+        self.assertEqual(got, [24, 27.5])
+
+    def test_before_tomorrows_it_runs_to_tonight_and_at_least_an_hour_on(self):
+        got = self._run("(function(){ var now=_agileMs('2026-11-06T09:00:00');"
+                        " var a=_agileSpan([['2026-11-06T22:30:00',1]], now), b=_agileSpan([], now);"
+                        " return [(a[0]+a[1]-now)/3600000, (b[0]+b[1]-now)/3600000]; })()")
+        self.assertEqual(got, [14, 1])
+
+    def test_the_route_sends_everything_published(self):
+        start = datetime(2026, 11, 6, 19, 30)
+        prices = [[(start + timedelta(minutes=30 * i)).isoformat(), 1.0] for i in range(-48, 56)]
+        got = A.window(prices, start)
+        self.assertEqual((got[0][0], got[-1][0]), ("2026-11-05T19:30:00", "2026-11-07T23:00:00"))
 
     def test_prices_short_of_the_edge_say_when_tomorrows_come(self):
         out = self._status("2026-11-06T22:30:00", "2026-11-06T09:00:00")
