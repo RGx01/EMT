@@ -113,6 +113,32 @@ class TheDay(unittest.TestCase):
                "import": {"prices": [[self._end(now.date()), 1.0]]}}
         self.assertTrue(A.due(rec, u, now, LON, ["import"]))
 
+    # 22 Nov 2026, the user: the Agile import card, hidden for a while and shown at 17:18, had no new prices — the
+    # 16:30 ask was the export's alone (import hidden), and its 90 minutes held the import's back
+    def _shown_since(self, asked_for):
+        now = datetime(2026, 11, 22, 17, 18, tzinfo=LON)
+        u = now.astimezone(UTC).replace(tzinfo=None)
+        rec = {"asked": "2026-11-22T16:30:07", "tries": {"2026-11-22-pm": 1},
+               "import": {"prices": [[self._end(now.date()), 1.0]]},
+               "export": {"prices": [[self._end(now.date() + timedelta(days=1)), 1.0]]}}
+        if asked_for is not None:
+            rec["asked_for"] = asked_for
+        return A.due(rec, u, now, LON, ["import", "export"])
+
+    def test_a_direction_shown_since_the_last_ask_need_not_wait(self):
+        self.assertTrue(self._shown_since(["export"]))
+
+    def test_GUARD_the_same_directions_still_wait(self):
+        self.assertFalse(self._shown_since(["import", "export"]))
+
+    def test_GUARD_a_record_from_before_still_waits(self):
+        self.assertFalse(self._shown_since(None))
+
+    def test_the_engine_records_whose_ask_it_was(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "engine.py"),
+                   encoding="utf-8").read()
+        self.assertIn('rec["asked_for"] = _agile_public_channels()', src)
+
     def test_the_cap_holds_each_side(self):
         rec = {"import": {"prices": []}}
         asks = self._a_day_with(rec, ["import"], answers_from=(99, 0))

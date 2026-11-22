@@ -6969,6 +6969,7 @@ async def _fetch_agile_public() -> dict:
         region = _ap.region_of(((_kraken_discovery or {}).get("import") or {}).get("tariff_code") or "")
         key = _ap.try_key(now_local)
         rec["asked"] = now_utc.isoformat()
+        rec["asked_for"] = _agile_public_channels()        # whose 90 minutes the next ask waits out
         rec["tries"] = {key: int((rec.get("tries") or {}).get(key, 0)) + 1}
         rec["region"] = region
         if _ap.products_due(rec, now_utc) or not all((rec.get(ch) or {}).get("product") for ch in _agile_public_channels()):

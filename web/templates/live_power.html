@@ -2338,7 +2338,9 @@ function _agileSetHidden(ch, hide){
     .then(function(r){ return r.json(); }).then(function(d){
       if (!d.ok) throw new Error(d.error || 'not saved');
       _agileHidden[ch] = hide;
-      if (hide) { _agileRender(); } else { _agileApply(); loadAgilePrices(); }
+      // shown again: what is kept now, and again once the engine has asked Octopus for what it skipped while
+      // the card was hidden (a tick and the call; 22 Nov 2026 — it waited for the 10-minute refresh)
+      if (hide) { _agileRender(); } else { _agileApply(); loadAgilePrices(); setTimeout(loadAgilePrices, 45000); }
     }).catch(function(e){
       if (window.EMT && EMT.notify) EMT.notify({id: 'agile-hide-failed', level: 'critical', dismissible: true,
         html: 'Could not ' + (hide ? 'hide' : 'show') + ' the Agile card. Please try again.'});
