@@ -7,6 +7,10 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **The Overview's bill card shows the Billing tab's total.** The two worked out the same money with
+  different rounding: the Overview rounded each day to the penny and added up the days, the Billing tab
+  rounds once, as your Octopus statement does. They could sit a few pence apart (£19.86 against £19.88).
+  The Overview's *This Bill* now shows the statement figure. Today and This Year are unchanged.
 - **Backups wait for a device's history rebuild.** *Backup now* is refused while *Rebuild history* or
   *Replace history* is running, saying which device, as a backup then would hold its history half done.
   The nightly copy waits for it too, unless the last copy is two days old.
