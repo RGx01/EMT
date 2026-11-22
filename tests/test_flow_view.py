@@ -495,7 +495,7 @@ class TheWiring(unittest.TestCase):
         self.assertIn("if (barFlow()) { barFlowBuildTable(tbl, aggList); return; }", _fn("barBuildTable"))
 
     def test_the_hh_rows_carry_their_brackets_for_flow(self):
-        self.assertIn("if ((barBrackets() || barFlow()) && barBrHH) {", _fn("barGetDataForPeriod"))
+        self.assertIn("if ((barBrackets() || barFlow()) && barBrHH) {", _fn("barGetDataForPeriodAll"))
         self.assertIn("if ((barBrackets() || barFlow()) && !barBrReady()) return;", _fn("barRender"))
 
     def test_drawn_at_once_when_the_plugin_is_in(self):
