@@ -10,6 +10,10 @@ internal name for everything before the first public release and never appears i
 - **The Agile cards show everything published.** They ran 24 hours either side of now, so once tomorrow's
   prices were out (about 4pm) the last few hours to 23:00 tomorrow — the evening peak — were cut off. They now
   run from 24 hours back to the last published half-hour.
+- **The Overview's text is 12px at least.** The power cards' charts, their axes and legends, the gauges'
+  units and every card title were 9–11px; none is under 12px now, and the expanded cards follow. The Meter's
+  reading is the car's size and stays on one line, and the gauges' tiny end labels (Export/Import, Out/In, 0)
+  are gone — the reading, its sign and the Meter's pill already say which way the power is going.
 
 ## [2026.11.0b32] — 2026-11-22
 
