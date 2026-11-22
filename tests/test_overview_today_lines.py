@@ -159,13 +159,23 @@ class TheBatteryView(unittest.TestCase):
 class ThePage(unittest.TestCase):
 
     def test_the_live_power_card_has_its_chart(self):
-        i = PAGE.index('<div class="power-card" data-ov-card="power">')
+        i = PAGE.index('<div class="power-card expandable-card" data-ov-card="power">')
         self.assertIn('<div class="td" id="td-power" data-td-kind="main"></div>', PAGE[i:i + 3000])
 
     def test_a_device_card_has_its_chart_and_a_battery_with_soc_its_switch(self):
         i = PAGE.index("function buildSocCard(")
         body = PAGE[i:PAGE.index("\n}\n", i)]
         self.assertIn("data-td-kind=\"device\" data-td-soc=\"' + (isBatt && info.soc_entity ? '1' : '')", body)
+
+    def test_a_chart_answers_the_pointer(self):
+        i = PAGE.index("function _tdRender(")
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        self.assertIn("cv0.addEventListener('pointermove', function(e){ _tdHover(el, e); });", body)
+        self.assertIn('<div class="td-tip"></div>', body)
+
+    def test_an_expanded_chart_names_its_card(self):
+        i = PAGE.index("function _expandPower(")
+        self.assertIn("td.setAttribute('data-td-mid', src.id.replace(/^td-/, ''));", PAGE[i:PAGE.index("\n}\n", i)])
 
     def test_a_new_device_card_draws_its_chart(self):
         i = PAGE.index("container.appendChild(tmp.firstChild);")
@@ -179,7 +189,7 @@ class ThePure(unittest.TestCase):
         def fn(n):
             i = PAGE.index("function %s(" % n)
             return PAGE[i:PAGE.index("\n}\n", i) + 2]
-        src = "\n".join(fn(n) for n in ("_tdAt", "_tdFmt", "_tdSeries"))
+        src = "\n".join(fn(n) for n in ("_tdAt", "_tdFmt", "_tdSeries", "_tdClock"))
         src += "\nconsole.log(JSON.stringify(%s));" % expr
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(src)
@@ -207,6 +217,10 @@ class ThePure(unittest.TestCase):
         # export and out are drawn below zero and written so (22 Nov 2026, the user)
         self.assertEqual(self._js("[_tdFmt(1.5,'kWh',true), _tdFmt(0,'kWh',true), _tdFmt(1.5,'kWh',false), _tdFmt(40,'%',true)]"),
                          ["−1.50", "0.00", "1.50", "40%"])
+
+    def test_the_pointers_time(self):
+        self.assertEqual(self._js("[_tdClock(0), _tdClock(605.5), _tdClock(1439), _tdClock(1440)]"),
+                         ["00:00", "10:05", "23:59", "00:00"])
 
     def test_a_card_with_no_data_has_no_chart(self):
         self.assertIsNone(self._js("_tdSeries({devices:{}},'device','gone','energy')"))

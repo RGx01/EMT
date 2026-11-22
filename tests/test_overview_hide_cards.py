@@ -124,7 +124,7 @@ class ThePure(unittest.TestCase):
 class ThePage(unittest.TestCase):
 
     def test_every_card_is_marked(self):
-        for key, near in (("mix", 'id="mix-card"'), ("power", 'class="power-card"'), ("charge", 'id="charge-card-wrap"'),
+        for key, near in (("mix", 'id="mix-card"'), ("power", 'class="power-card expandable-card"'), ("charge", 'id="charge-card-wrap"'),
                           ("carbon", 'id="carbon-card-wrap"'), ("history", 'id="power-history-card-wrap"')):
             with self.subTest(key):
                 self.assertRegex(PAGE, r'%s[^>]*data-ov-card="%s"' % (re.escape(near), key))

@@ -643,8 +643,8 @@ SETTINGS_DEFAULTS = {
 # Overview's Agile cards: hidden, and their public prices not fetched. Beside the defaults, not in them:
 # Insights' carbon answer carries the defaults whole, and these are nothing to do with it.
 SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False,
-                  # the Overview's cost cards as totals only (22 Nov 2026, the user)
-                  "overview_costs_compact": False}
+                  # the Overview's cost cards as totals only, its power cards as gauges only (22 Nov 2026, the user)
+                  "overview_costs_compact": False, "overview_power_compact": False}
 # The other Overview cards the user has hidden, by the page's `data-ov-card` key; a device's includes its meter id,
 # so these cannot be a fixed set of flags. Keys go into the page's CSS, hence the narrow alphabet.
 _OVERVIEW_CARD_KEY = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
@@ -1184,6 +1184,7 @@ def live_power_page():
     overview_hidden = []
     overview_rows, overview_card_order, overview_costs_compact = [], [], False
     overview_battery_view = {}
+    overview_power_compact = False
     try:
         import agile_public as _ap_h
         _saved = store_access.store().get_settings()
@@ -1193,6 +1194,7 @@ def live_power_page():
         overview_rows = _overview_list(_saved, "overview_rows")
         overview_card_order = _overview_list(_saved, "overview_card_order")
         overview_costs_compact = bool(_saved.get("overview_costs_compact"))
+        overview_power_compact = bool(_saved.get("overview_power_compact"))
         overview_battery_view = _overview_battery_view(_saved)
     except Exception:
         pass
@@ -1206,6 +1208,7 @@ def live_power_page():
         overview_rows=overview_rows,
         overview_card_order=overview_card_order,
         overview_costs_compact=overview_costs_compact,
+        overview_power_compact=overview_power_compact,
         overview_battery_view=overview_battery_view,
         active="live_power",
         currency=currency,
