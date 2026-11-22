@@ -8,8 +8,9 @@ internal name for everything before the first public release and never appears i
 ## [Unreleased]
 
 - **The car's 6 hours on its Overview card.** On Intelligent Octopus Go's capped agreement (IOG-SMB), the EV
-  card shows today's noon-to-noon allowance: about how much smart charging has been used, how much Octopus's
-  current plan would add, and how much is left — or how far the plan runs over — with the next planned window.
+  card shows today's noon-to-noon allowance beside its gauge: about how much smart charging has been used, how
+  much Octopus's current plan would add, and how much is left — or how far the plan runs over — with the next
+  planned window.
   These are EMT's estimates, counted as the Smart Charging card counts them.
 - **A heat pump's outdoor temperature.** Give your heat pump an outdoor temperature sensor in Meter Config and
   its Overview card shows a temperature gauge beside its power, and its chart draws the temperature since
@@ -25,7 +26,8 @@ internal name for everything before the first public release and never appears i
 - **Arrange the Overview.** The Overview's cards now sit in rows: Power (Live Power and your devices), Grid
   and carbon (the generation mix, carbon intensity and the 48-hour history together), Smart Charging, Agile
   import and Agile export prices, and the cost cards. Unlock the padlock at the top of the page and drag the
-  rows, and the cards along each row, into place. When the Power row's cards do not fit on one line, they split evenly, three and two
+  rows, and the cards along each row, into place; while it is unlocked a gentle wave runs down the rows now and
+  then (not if your device asks for less motion). When the Power row's cards do not fit on one line, they split evenly, three and two
   rather than four and one. Carbon Intensity no longer grows and shrinks beside the gauges, and a hidden card's
   neighbours fill its place, and the 48-hour history fills the height of its row. The compact button on any
   cost card shows them all as a total each, on one line.

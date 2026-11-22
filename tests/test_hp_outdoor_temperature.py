@@ -179,7 +179,7 @@ class ThePage(unittest.TestCase):
         i = PAGE.index("function buildSocCard(")
         body = PAGE[i:PAGE.index("\n}\n", i)]
         self.assertIn("if (isHeatPump && info.temp_entity) {", body)
-        self.assertIn("'<div class=\"dev-gauges\">' + battSection + _invHtml + pvGauge + tempGauge + '</div>'", body)
+        self.assertIn("'<div class=\"dev-gauges\">' + battSection + _invHtml + pvGauge + tempGauge + capSection + '</div>'", body)
         self.assertIn("setTempGauge(mid, info.temp_c);", PAGE)
 
 

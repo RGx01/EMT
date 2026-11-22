@@ -135,7 +135,7 @@ class ThePage(unittest.TestCase):
         i = PAGE.index("function buildSocCard(")
         body = PAGE[i:PAGE.index("\n}\n", i)]
         self.assertIn("'<div class=\"battery-icon v\"", body)
-        self.assertIn("gaugeSection = '<div class=\"dev-gauges\">' + battSection + _invHtml + pvGauge + tempGauge + '</div>';", body)
+        self.assertIn("gaugeSection = '<div class=\"dev-gauges\">' + battSection + _invHtml + pvGauge + tempGauge + capSection + '</div>';", body)
         self.assertIn("fill.style.height = (pct !== null ? pctVal + '%' : '0%');", PAGE)
 
     def test_the_meter_card_is_titled_and_its_gauge_labelled_as_a_devices(self):
@@ -152,7 +152,7 @@ class ThePage(unittest.TestCase):
 
     def test_the_power_cards_can_be_gauges_only(self):
         self.assertIn('ov-power-row{% if overview_power_compact %} compact{% endif %}"', PAGE)
-        self.assertIn(".ov-power-row.compact .td, .ov-power-row.compact .ev-cap { display: none !important; }", PAGE)
+        self.assertIn(".ov-power-row.compact .td { display: none; }", PAGE)
 
     def test_unlocked_rows_and_cards_are_dragged(self):
         i = PAGE.index("function _ovArrangeTools(")
@@ -165,6 +165,18 @@ class ThePage(unittest.TestCase):
         # the layout rewrites every card's CSS order from _ovCardOrder: a drag that set styles alone was undone
         i = PAGE.index("function _ovDragMove(")
         self.assertIn("_ovCardOrder = all;", PAGE[i:PAGE.index("\n}\n", i)])
+
+    def test_unlocked_a_wave_runs_down_the_rows(self):
+        # 22 Nov 2026, the user: "a subtle wave through the rows whilst the overview is unlocked and a panel is not
+        # being dragged"; each row takes its turn by its place, and those who ask for less motion get none
+        self.assertIn("animation: ov-wave 5s ease-in-out infinite;", PAGE)
+        self.assertIn("animation-delay: calc(var(--ov-i, 0) * 0.12s);", PAGE)
+        self.assertIn("body.ov-drag-active .ov-arranging .ov-row { animation: none; }", PAGE)
+        i = PAGE.index("@media (prefers-reduced-motion: reduce) {")
+        self.assertIn(".ov-arranging .ov-row:not([hidden]) { animation: none; }", PAGE[i:i + 120])
+        i = PAGE.index("function _ovArrangeTools(")
+        self.assertIn("rows.forEach(function(r, i){ r.style.setProperty('--ov-i', String(i)); });",
+                      PAGE[i:PAGE.index("\n}\n", i)])
 
     def test_the_padlock(self):
         i = PAGE.index("{% block topbar %}")
