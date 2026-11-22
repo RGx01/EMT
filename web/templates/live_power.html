@@ -119,7 +119,7 @@ body.ov-drag-active .ov-arranging .ov-row { animation: none; }
   top: 8px;
   left: 8px;
   z-index: 2;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -144,7 +144,7 @@ body.ov-drag-active .ov-arranging .ov-row { animation: none; }
 .lp-head { flex-wrap: wrap; }
 .lp-head .lp-pill { align-self: center; }
 .lp-pill {
-  font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 14px; white-space: nowrap;
+  font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 14px; white-space: nowrap;
   background: var(--bg); border: 1px solid var(--border); color: var(--muted);
 }
 /* compact costs: each card's title and total on one line, its period beneath (22 Nov 2026, the user: more compact) */
@@ -172,7 +172,7 @@ body.ov-drag-active .ov-arranging .ov-row { animation: none; }
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   min-height: 16px;
 }
@@ -183,7 +183,7 @@ body.ov-drag-active .ov-arranging .ov-row { animation: none; }
 .td-tip {
   position: absolute; pointer-events: none; display: none; z-index: 3; white-space: nowrap;
   background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 7px;
-  font-size: 10px; line-height: 1.45; color: var(--text); box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  font-size: 12px; line-height: 1.45; color: var(--text); box-shadow: 0 4px 14px rgba(0,0,0,0.35);
 }
 .td-tip .m { color: var(--muted); }
 /* compact: the power cards as gauges only (22 Nov 2026, the user) */
@@ -196,7 +196,7 @@ body.ov-drag-active .ov-arranging .ov-row { animation: none; }
 .ev-cap-bar .u { background: #7c6af7; }
 .ev-cap-bar .p { background: repeating-linear-gradient(45deg, rgba(124,106,247,0.55) 0 3px, rgba(124,106,247,0.2) 3px 6px); }
 .ev-cap-bar .p.over { background: repeating-linear-gradient(45deg, rgba(255,107,107,0.7) 0 3px, rgba(255,107,107,0.25) 3px 6px); }
-.ev-cap-text { font-size: 10px; line-height: 12px; color: var(--muted); white-space: nowrap; overflow: hidden;
+.ev-cap-text { font-size: 12px; line-height: 15px; color: var(--muted); white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
 .ev-cap-text .over { color: #ff6b6b; }
 .ev-cap-text.h { color: var(--text); font-weight: 600; }
@@ -212,7 +212,7 @@ body.ov-drag-active .ov-arranging .ov-row { animation: none; }
   width: 150px; max-width: 150px; height: 84px; margin-top: 0; }
 .expand-modal .gauge-kw { font-size: 20px; }
 .expand-modal .inv-gauge-kw { font-size: 18px; }
-.expand-modal .dev-gauge-label { font-size: 11px; }
+.expand-modal .dev-gauge-label { font-size: 12px; }
 .expand-modal .batt-v { align-self: flex-end; }
 .expand-modal .battery-icon.v { width: 28px; height: 56px; }
 .expand-modal .battery-pct { font-size: 18px; }
@@ -230,18 +230,22 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
 .td-switch { display: flex; gap: 2px; }
 .td-switch button {
   background: transparent; border: 1px solid var(--border); color: var(--muted);
-  border-radius: 4px; font-size: 10px; line-height: 1; padding: 2px 6px; cursor: pointer;
+  border-radius: 4px; font-size: 12px; line-height: 1; padding: 2px 6px; cursor: pointer;
 }
 .td-switch button.active { color: var(--text); border-color: var(--muted); }
 .ov-power-row > .power-card, .ov-power-row .soc-card { gap: 6px; }
 .ov-power-row .gauge-wrap, .ov-power-row .inv-gauge-wrap { max-width: 112px; height: 62px; margin-top: 0; }
-.ov-power-row .gauge-kw { font-size: 17px; }
+.ov-power-row .gauge-kw { font-size: 15px; }     /* the car's: "+7.44 kW" wrapped at 17px (22 Nov 2026) */
+.gauge-value, .inv-gauge-value { white-space: nowrap; }
+/* The Overview's floor is 12px (22 Nov 2026, the user): the card titles too, which are 11px app-wide */
+#ov-rows .card-title, #ov-costs .card-title { font-size: 12px; }
+.gauge-unit, .inv-gauge-unit { font-size: 12px; }
 .ov-power-row .inv-gauge-kw { font-size: 15px; }
 .ov-power-row .battery-pct { font-size: 14px; }
 /* a device's level and gauges on one row: the battery upright, the inverter and PV gauges one size */
 .dev-gauges { display: flex; align-items: flex-end; justify-content: center; gap: 10px; width: 100%; }
 .dev-gauge { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 0 1 112px; min-width: 0; }
-.dev-gauge-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;
+.dev-gauge-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;
   white-space: nowrap; }
 .ov-power-row .dev-gauge .inv-gauge-wrap, .pv-gauge-wrap { width: 100%; max-width: 112px; height: 62px; }
 .pv-gauge-wrap svg { width: 100%; height: 100%; overflow: visible; }
@@ -352,7 +356,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
 #charge-card-wrap { max-width: 1400px; box-sizing: border-box; }
 #charge-backdrop .expand-modal { height: auto; max-height: min(900px, 96vh); }
 #charge-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-.charge-section-h { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+.charge-section-h { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--muted); font-weight: 600; margin: 14px 0 4px; }
 .charge-section-h:first-child { margin-top: 0; }
 .charge-range-btn { background: transparent; border: 1px solid var(--border);
@@ -475,7 +479,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
 }
 
 .inv-gauge-unit {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   margin-top: 1px;
 }
@@ -506,7 +510,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
   pointer-events: none;
 }
 .pv-gauge-label {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -578,13 +582,13 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
 }
 
 .gauge-unit {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   margin-top: 2px;
 }
 
 .gauge-label {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -613,7 +617,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 
@@ -680,7 +684,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
 }
 
 .billing-period {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   margin-bottom: 10px;
 }
@@ -695,7 +699,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 11px;
+  font-size: 12px;
   padding: 4px 8px;
   background: var(--bg);
   border-radius: 4px;
@@ -727,7 +731,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
   border: 1px solid var(--border, rgba(255,255,255,0.1));
   border-radius: 6px;
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--text, #e2e8f0);
   white-space: nowrap;
@@ -738,7 +742,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
   display: flex;
   gap: 16px;
   margin-top: 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
   flex-wrap: wrap;
 }
@@ -772,7 +776,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
   background: none;
   border: none;
   padding: 3px 10px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--mono);
   color: var(--muted);
   cursor: pointer;
@@ -815,7 +819,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
 }
 
 .carbon-unit {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 
@@ -878,7 +882,7 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
 .carbon-time-labels {
   display: flex;
   justify-content: space-between;
-  font-size: 9px;
+  font-size: 12px;
   color: var(--muted);
   margin-top: 4px;
   overflow: hidden;
@@ -1043,9 +1047,6 @@ function setMiniSource(enabled){
         <!-- Centre dot -->
         <circle cx="110" cy="110" r="5" fill="#e8eaf0"/>
         <!-- Labels -->
-        <text x="18" y="125" font-size="10" fill="#6b7080" text-anchor="middle">Export</text>
-        <text x="202" y="125" font-size="10" fill="#6b7080" text-anchor="middle">Import</text>
-        <text x="110" y="18" font-size="10" fill="#6b7080" text-anchor="middle">Net</text>
       </svg>
       <div class="gauge-value">
         <div class="gauge-kw" id="net-kw">—</div>
@@ -1084,7 +1085,7 @@ function setMiniSource(enabled){
     </svg>
   </button>
   <div class="card-title">🚗 Smart Charging</div>
-  <div style="font-size:11px;color:var(--muted);margin:-2px 0 4px;">Your car's smart charges, as Octopus reports and bills them</div>
+  <div style="font-size:12px;color:var(--muted);margin:-2px 0 4px;">Your car's smart charges, as Octopus reports and bills them</div>
   <div id="charge-summary" style="color:var(--muted);font-size:13px;">Loading…</div>
 </div>
 </div><!-- /charge row -->
@@ -1116,12 +1117,12 @@ function setMiniSource(enabled){
       <div id="mix-donut-wrap" style="position:relative;width:120px;height:120px;flex-shrink:0;">
         <canvas id="mix-donut-canvas" width="120" height="120"></canvas>
         <div id="mix-donut-centre" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;">
-          <div id="mix-centre-fuel" style="font-size:10px;color:var(--muted);"></div>
+          <div id="mix-centre-fuel" style="font-size:12px;color:var(--muted);"></div>
           <div id="mix-centre-perc" style="font-size:16px;font-weight:700;color:var(--text);"></div>
         </div>
       </div>
       <div style="flex:1;min-width:0;">
-        <div id="mix-legend" style="font-size:11px;display:flex;flex-direction:column;gap:2px;"></div>
+        <div id="mix-legend" style="font-size:12px;display:flex;flex-direction:column;gap:2px;"></div>
         <div id="mix-loading" style="color:var(--muted);font-size:12px;">Loading...</div>
       </div>
     </div>
@@ -1144,7 +1145,7 @@ function setMiniSource(enabled){
         <div class="carbon-unit">gCO₂/kWh</div>
       </div>
       <div class="carbon-index" id="carbon-index">—</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Next 48 hours</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">Next 48 hours</div>
       <div class="carbon-forecast" id="carbon-forecast"></div>
       <div class="carbon-time-labels" id="carbon-time-labels"></div>
     </div>
@@ -1185,8 +1186,8 @@ function setMiniSource(enabled){
         <i style="background:linear-gradient(to right,#ff6b6b,#00d4aa);"></i>
         Net carbon rate (gCO₂/min) — red = emitting, green = offsetting
       </span>
-      <span id="ph-legend-mix" style="display:none;font-size:11px;color:var(--muted);">Grid fuel mix — % of generation by source</span>
-      <span id="power-history-status" style="margin-left:auto;font-size:11px;color:var(--muted);"></span>
+      <span id="ph-legend-mix" style="display:none;font-size:12px;color:var(--muted);">Grid fuel mix — % of generation by source</span>
+      <span id="power-history-status" style="margin-left:auto;font-size:12px;color:var(--muted);"></span>
     </div>
   </div>
   {% endif %}
@@ -1228,7 +1229,7 @@ function setMiniSource(enabled){
       {% if has_power_sensor %}
       <span><i class="agile-pw-key agile-pw-key-{{ ch }}"></i>{{ 'Export' if ch == 'export' else 'Import' }} power (kW, right)</span>
       {% endif %}
-      <span id="agile-status-{{ ch }}" style="margin-left:auto;font-size:11px;color:var(--muted);"></span>
+      <span id="agile-status-{{ ch }}" style="margin-left:auto;font-size:12px;color:var(--muted);"></span>
     </div>
     <div id="agile-compare-{{ ch }}" style="display:none;font-size:12px;color:var(--muted);margin-top:6px;"></div>
   </div>
@@ -1604,13 +1605,13 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
   if (big) {
     scale = [[top, _tdFmt(top, ser.unit) + (u ? '' : ' kWh')], [0, '0']];
     if (bot) scale.push([-bot, _tdFmt(bot, ser.unit, true)]);
-    g.font = '11px sans-serif';
+    g.font = '12px sans-serif';
     padL = Math.max(40, Math.ceil(Math.max.apply(null, scale.map(function(x){ return g.measureText(x[1]).width; }))) + 12);
   }
   var X = function(m){ return padL + (w - padL - pad) * (m / xmax); };
   var Y = function(v){ return padT + (h - padT - padB) * ((top - v) / (top + bot)); };
   if (big) {
-    g.fillStyle = 'rgba(128,128,128,0.8)'; g.font = '11px sans-serif';
+    g.fillStyle = 'rgba(128,128,128,0.8)'; g.font = '12px sans-serif';
     g.textAlign = 'center'; g.textBaseline = 'top';
     [0, 180, 360, 540, 720, 900, 1080, 1260, 1440].forEach(function(m){
       if (m > xmax) return;
@@ -1648,7 +1649,7 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
     });
     g.setLineDash([]);
     if (big) {
-      g.fillStyle = TD_COL.temp; g.font = '11px sans-serif'; g.textAlign = 'right'; g.textBaseline = 'middle';
+      g.fillStyle = TD_COL.temp; g.font = '12px sans-serif'; g.textAlign = 'right'; g.textBaseline = 'middle';
       g.fillText(r2[1] + '°C', w - pad, Y2(r2[1]));
       g.fillText(r2[0] + '°C', w - pad, Y2(r2[0]) - 6);
     }
@@ -1910,7 +1911,7 @@ function _statusPill(st){
          in_progress:['#f0a500','Charging'],
          scheduled:['#6b7280','Scheduled']};
   var x=m[st]||m.scheduled;
-  return '<span style="background:'+x[0]+';color:#fff;font-size:10px;font-weight:600;'
+  return '<span style="background:'+x[0]+';color:#fff;font-size:12px;font-weight:600;'
        + 'padding:1px 8px;border-radius:10px;vertical-align:middle;">'+x[1]+'</span>';
 }
 
@@ -2007,7 +2008,7 @@ function _fillChartSVG(s){
   cols.forEach(function(x,i){
     var xx=i*step+4, bw=Math.max(step-6,6);
     if(!x){
-      labels+='<text x="'+(xx+bw/2).toFixed(1)+'" y="'+(base-4)+'" font-size="10" fill="var(--muted)" '
+      labels+='<text x="'+(xx+bw/2).toFixed(1)+'" y="'+(base-4)+'" font-size="12" fill="var(--muted)" '
           +'text-anchor="middle">…</text>';
       return;
     }
@@ -2046,7 +2047,7 @@ function _sessionRowHtml(s){
     + '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">'
     + '<span><strong>'+_cesc(_dayName(s.local.start.date))+'</strong> <span style="color:var(--muted);">'+_cesc(win)+'</span></span>'
     + '<span>'+s.kwh.toFixed(1)+' kWh · '+_costText(s)+' '+_statusPill(s.status)+'</span></div>'
-    + '<div style="color:var(--muted);font-size:11px;margin-top:2px;">'
+    + '<div style="color:var(--muted);font-size:12px;margin-top:2px;">'
     + _capLine({est_charge_minutes:s.est_charge_minutes, dispatch_minutes:s.dispatch_minutes,
                 charge_minutes:s.charge_minutes}, false)+' · '+_peakText(s)+'</div>'
     + _fillChartSVG(s) + '</div>';
@@ -2223,7 +2224,7 @@ function _agileDraw(ch){
   function y(v){ return PAD_T + (vmax - v) / (vmax - vmin) * CH; }
   // grid and axis: 5, 10, 20 or 50p, the smallest giving four lines or fewer; 0p stronger
   var step = [5, 10, 20, 50].filter(function(s){ return (vmax - vmin) / s <= 4; })[0] || 100;
-  ctx.font = '10px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  ctx.font = '12px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
   for (var v = Math.ceil(vmin / step) * step; v <= vmax; v += step) {
     ctx.strokeStyle = v === 0 ? (dark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)') : grid;
     ctx.lineWidth = v === 0 ? 1 : 0.5;
@@ -2669,9 +2670,6 @@ function buildSocCard(meterId, info) {
   var v2x     = info.v2x || false;
   var icon    = isBatt ? '🔋' : (isEV ? '🚗' : '♨️');
 
-  // Left SVG label — only battery and V2X EV can discharge
-  var leftLabel  = (isBatt || v2x) ? 'Out' : '';
-  var rightLabel = isBatt ? 'In' : (isHeatPump ? 'Consumption' : 'Charging');
 
   // Battery icon + SoC — only for battery type
   var battSection = '';
@@ -2717,7 +2715,6 @@ function buildSocCard(meterId, info) {
     var zeroMarkerX2 = bidir ? '110' : '20';
     var zeroMarkerY1 = bidir ? '24' : '110';
     var zeroMarkerY2 = bidir ? '36' : '98';
-    var zeroLabel = bidir ? '0' : '';
     _invHtml =
       '<div class="dev-gauge">' +
       '<div class="dev-gauge-label">' + gaugeLabel + '</div>' +
@@ -2730,9 +2727,6 @@ function buildSocCard(meterId, info) {
           '<line id="inv-needle-' + meterId + '" x1="110" y1="110" x2="110" y2="30"' +
             ' stroke="#e8eaf0" stroke-width="2" stroke-linecap="round" transform="' + initRotate + '"/>' +
           '<circle cx="110" cy="110" r="5" fill="#e8eaf0"/>' +
-          '<text x="18" y="125" font-size="10" fill="#6b7080" text-anchor="middle">' + leftLabel + '</text>' +
-          '<text x="202" y="125" font-size="10" fill="#6b7080" text-anchor="middle">' + rightLabel + '</text>' +
-          '<text x="110" y="18" font-size="10" fill="#6b7080" text-anchor="middle">' + zeroLabel + '</text>' +
         '</svg>' +
         '<div class="inv-gauge-value">' +
           '<div class="inv-gauge-kw" id="inv-kw-' + meterId + '">—</div>' +
@@ -3495,8 +3489,8 @@ function _drawMixDonut(mix) {
     legend.innerHTML = data.map(function(d) {
       return '<div style="display:flex;align-items:center;gap:5px;">' +
         '<span style="width:7px;height:7px;border-radius:50%;background:' + _mixFuelColour(d.fuel) + ';flex-shrink:0;"></span>' +
-        '<span style="color:var(--muted);font-size:10px;">' + _mixFuelLabel(d.fuel) + '</span>' +
-        '<span style="margin-left:auto;color:var(--text);font-weight:600;font-size:10px;">' + d.perc.toFixed(1) + '%</span>' +
+        '<span style="color:var(--muted);font-size:12px;">' + _mixFuelLabel(d.fuel) + '</span>' +
+        '<span style="margin-left:auto;color:var(--text);font-weight:600;font-size:12px;">' + d.perc.toFixed(1) + '%</span>' +
         '</div>';
     }).join('');
   }
@@ -3688,7 +3682,7 @@ function _phDraw() {
     var intervalMs = niceTimeInterval(tSpan);
     var minGapPx = 36; // minimum pixels between labels to avoid overlap
     ctx.fillStyle = th.text;
-    ctx.font      = '10px sans-serif';
+    ctx.font      = '12px sans-serif';
 
     // Always draw start label (left edge)
     ctx.textAlign = 'left';
@@ -3734,7 +3728,7 @@ function _phDraw() {
     }
     ctx.textAlign = 'center';
     ctx.fillStyle = th.text;
-    ctx.font      = '10px sans-serif';
+    ctx.font      = '12px sans-serif';
     ctx.fillText(text, 0, 0);
     ctx.restore();
   }
@@ -3794,7 +3788,7 @@ function _phDraw() {
     drawGrid(ty, allTicks);
 
     ctx.fillStyle = th.text;
-    ctx.font      = '10px sans-serif';
+    ctx.font      = '12px sans-serif';
     ctx.textAlign = 'right';
     allTicks.forEach(function(kw) {
       ctx.fillText(kw.toFixed(1), PAD_L - 4, ty(kw) + 3);
@@ -3898,7 +3892,7 @@ function _phDraw() {
 
     drawGrid(ty, ticks);
 
-    ctx.font      = '10px sans-serif';
+    ctx.font      = '12px sans-serif';
     ctx.textAlign = 'right';
     ticks.forEach(function(v) {
       ctx.fillStyle = v > 0 ? 'rgba(255,107,107,0.9)'
@@ -4038,7 +4032,7 @@ function _phDraw() {
       var y = tyPct(pct);
       ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(PAD_L + CW, y); ctx.stroke();
       ctx.fillStyle = th.text;
-      ctx.font      = '10px sans-serif';
+      ctx.font      = '12px sans-serif';
       ctx.textAlign = 'right';
       ctx.fillText(pct + '%', PAD_L - 4, y + 3);
     });
