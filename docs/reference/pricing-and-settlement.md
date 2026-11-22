@@ -71,6 +71,10 @@ The bill wins over the prediction; where they disagree the detail panel notes it
   window. A charge past the 6 hours not yet billed still counts.
 - On a capped half-hour with EV, the cap's four rates price the legs (EV off-peak within the allowance,
   EV peak past it, the house's).
+- **Shown** on the Smart Charging card per cap-day, and on the Overview's EV card for today's: the minutes
+  counted so far, the minutes Octopus's current plan would charge before the next noon (planned kWh over the
+  plan's fullest half-hour), and what is left or over (`server._ev_cap_now`). Both count with
+  `server._cap_rows`.
 
 ## "Settled" is two events
 

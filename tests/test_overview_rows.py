@@ -152,7 +152,7 @@ class ThePage(unittest.TestCase):
 
     def test_the_power_cards_can_be_gauges_only(self):
         self.assertIn('ov-power-row{% if overview_power_compact %} compact{% endif %}"', PAGE)
-        self.assertIn(".ov-power-row.compact .td { display: none; }", PAGE)
+        self.assertIn(".ov-power-row.compact .td, .ov-power-row.compact .ev-cap { display: none !important; }", PAGE)
 
     def test_unlocked_rows_and_cards_are_dragged(self):
         i = PAGE.index("function _ovArrangeTools(")

@@ -31,7 +31,9 @@ card along its row by its handle, with the pointer, so a finger works as a mouse
 lines as fit at 220 px, then as even as they can be. In the Grid and carbon row a hidden card's neighbours fill
 its place.
 
-`/api/overview/days` gives each power card today against yesterday, as cumulative [minute, value] points since
+`/api/overview/days` also carries `ev_cap` with a car on a capped agreement — today's noon-to-noon 6 hours,
+used, planned and the plan's windows ([pricing](pricing-and-settlement.md#the-6-hour-cap-iog-smb)) — and gives
+each power card today against yesterday, as cumulative [minute, value] points since
 each day's local midnight (`overview_days.py`):
 
 - **Live Power**: the main meter's half-hours, plus the half-hour in progress from its register reads.
