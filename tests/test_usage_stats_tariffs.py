@@ -132,8 +132,9 @@ class ThePage(unittest.TestCase):
 
     def test_where_a_bar_is_one_stretch_of_time_with_agreements(self):
         avail = _fn("barTariffsAvailable")
-        self.assertIn("var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'hh' || barPeriod === 'span';",
-                      avail)
+        # a span in month order is not one stretch of time a bar (22 Nov 2026)
+        self.assertIn("var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'hh' ||\n"
+                      "             (barPeriod === 'span' && !barSpanMonthFirst());", avail)
         self.assertIn("return view && !!barTariffs && barTariffs.length > 0;", avail)
         self.assertIn("if (_tw) _tw.style.display = barTariffsAvailable() ? 'flex' : 'none';", _fn("barRender"))
 

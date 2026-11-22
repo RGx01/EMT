@@ -7,6 +7,10 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Usage Stats: Month order separates the months.** On Monthly, ordered by Month, a line now separates each
+  month's group of bars, and the Net line runs within a month instead of joining it to the next.
+- **Usage Stats: Span by the day, the month or the year, and by Month.** A span's bars can be a day, a month or
+  a year each, and grouped by month across the years as Monthly's can.
 - **The car's 6 hours on its Overview card.** On Intelligent Octopus Go's capped agreement (IOG-SMB), the EV
   card shows today's noon-to-noon allowance beside its gauge: about how much smart charging has been used, how
   much Octopus's current plan would add, and how much is left — or how far the plan runs over — with the next
