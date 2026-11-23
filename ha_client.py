@@ -149,17 +149,23 @@ class HAClient:
             except Exception as e:
                 logger.warning("ha_client: listen error: %s — reconnecting in 10s", e)
 
-            # Reconnect — keep retrying until successful
+            # Reconnect — keep retrying until successful. A refused attempt means Home
+            # Assistant itself was down (a restart answers 502 for a minute or more); a
+            # first attempt that succeeds means HA stayed up and only this socket dropped —
+            # usually because EMT's own loop was held by a slow commit on an SD card.
+            failed = 0
             while True:
                 await asyncio.sleep(10)
                 try:
                     self._connected.clear()
                     await self.connect()
-                    logger.info("ha_client: reconnected successfully")
+                    logger.info("ha_client: reconnected successfully%s",
+                                f" after {failed} refused attempt(s)" if failed else "")
                     if self._on_reconnect:
-                        await self._on_reconnect()
+                        await self._on_reconnect(ha_was_down=failed > 0)
                     break
                 except Exception as e:
+                    failed += 1
                     logger.warning("ha_client: reconnect failed: %s — will retry in 10s", e)
 
     async def _subscribe_state_changes(self):

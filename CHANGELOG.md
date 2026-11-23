@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A slow moment no longer restarts EMT's work.** On an SD card, saving can hold EMT for 20 seconds or
+  more; Home Assistant may drop the connection meanwhile, and on reconnecting EMT ran its whole startup
+  again, which held it as long a second time. It now reconnects and carries on, and runs its startup
+  again only when Home Assistant itself was down.
+
 ## [2026.11.0b33] — 2026-11-23
 
 **The last beta here.** EMT's first release, **2026.12.0**, comes to this repository on 1 December 2026,

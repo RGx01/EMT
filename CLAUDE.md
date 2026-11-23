@@ -43,8 +43,9 @@ fix went v5 → v4). **Each new v4 release:** port its forward fixes, not its he
 floor if it carries a heal (`v4import/gate.py` `FLOOR_VERSION`, the import spec, `docs/reference/v4-import-and-first-run.md`,
 README, BETA.md, the v4-import issue form, this file — `git grep 4.5.23` finds them).
 The deconstruction (steps 1–7, workstreams A–E) is done; its record is `docs/history/design/` and
-`docs/history/ROADMAP-done.md`. The Pi runs from an **SD card**: about a minute of 2–6 s commit stalls
-after a restore or upgrade; the writer-thread design is held in reserve.
+`docs/history/ROADMAP-done.md`. The Pi runs from an **SD card**: single commits stall the loop in normal running too — several a day,
+mostly at a half-hour rollover, up to ~26 s (soak, 21–23 Nov 2026), beyond the minute of 2–6 s stalls
+after a restore or upgrade; nothing is lost, and the writer-thread design is held in reserve.
 
 **Repositories (2 Nov 2026).** This repo was created that day from a history rewritten clean of real
 account details; the work before it, with its issues and PRs, is the private `RGx01/EMT-archive`
