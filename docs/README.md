@@ -16,7 +16,7 @@ And:
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Branches, running the tests, looking at a change locally, the repositories, releasing |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Reporting a problem; what a change must carry, and what won't be accepted |
 | [../CHANGELOG.md](../CHANGELOG.md) | What changed, for the people using EMT |
-| [../BETA.md](../BETA.md), [../SECURITY.md](../SECURITY.md) | For beta testers; reporting a vulnerability, and what EMT holds |
+| [../BETA.md](../BETA.md), [../SECURITY.md](../SECURITY.md) | Testing a beta (from `RGx01/EMT_beta`); reporting a vulnerability, and what EMT holds |
 | The help, in the app | How to use each page (`web/templates/help/`) |
 
 ## Conventions

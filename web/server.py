@@ -3402,8 +3402,8 @@ def _import_gate():
 
 
 V5_OLDER_SCHEMA = (
-    "This backup was made by an earlier development build of EMT, and its data is stored "
-    "differently from this one. Restore a backup from the v4 add-on instead.")
+    "This backup was made by an earlier development build of EMT, from before its betas, and its "
+    "data is stored differently from this one. Restore a backup from the v4 add-on instead.")
 V5_NEWER_SCHEMA = (
     "This backup was made by a newer version of EMT than this one. Update EMT, then "
     "restore it.")

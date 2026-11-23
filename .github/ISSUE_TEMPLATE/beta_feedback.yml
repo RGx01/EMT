@@ -1,5 +1,5 @@
 name: Beta feedback
-description: Anything else — what worked, what was confusing, what's missing.
+description: Testing EMT (beta), or anything else — what worked, what was confusing, what's missing.
 labels: ["beta-feedback"]
 body:
   - type: input

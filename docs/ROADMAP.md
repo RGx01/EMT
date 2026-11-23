@@ -10,9 +10,9 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Before the first release
 
-- **The import floor, pinned on release day.** `v4import/gate.py` `FLOOR_VERSION` is 4.5.23, the last
-  v4 release that added a heal. It is set again from what v4 has reached when EMT's first release is
-  cut, and the positive import fixture retaken at that version.
+- **On release day (2026.12.0, 1 December 2026): confirm the import floor.** Pinned at 4.5.23 on
+  23 Nov 2026 (history/ROADMAP-done.md, *The first release's commitments*). If v4 ships a release with a heal before then, the floor rises to it and
+  the positive import fixture is retaken there; otherwise nothing.
 
 ## Open
 

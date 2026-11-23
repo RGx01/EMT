@@ -52,8 +52,12 @@ account details; the work before it, with its issues and PRs, is the private `RG
 in a commit message, is there. **Never push from the archive clone to `RGx01/EMT`,** nor from the v4
 archive clone to the public v4 repository.
 
-**Versions:** CalVer `YYYY.M.PATCH`, betas `2026.11.0b1`, `b2`, …; `main` holds the latest beta,
-2026.11.0b33. The slug is `emt`, the direct port 8098. Releasing: `docs/DEVELOPMENT.md`.
+**Versions:** CalVer `YYYY.M.PATCH`. `main` held the betas, `2026.11.0b1` to **2026.11.0b33** (the last);
+the first release is **2026.12.0, on 1 December 2026**, and from it `main` takes releases only. Betas
+ship from `RGx01/EMT_beta` (local clone `~/code/EMT_beta`: this repo's `dev` plus one commit — slug
+`emt_beta`, port 8090), tagged here as pre-releases. The slug is `emt`, the direct port 8098.
+Releasing: `docs/DEVELOPMENT.md`. EMT's own backups must restore forward from revision 5
+(`EMT_SCHEMA_RELEASED`).
 
 **Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via Data Management (through ingress
 since 14 Oct 2026, when the upload went up in pieces; `http://<homeassistant>:8098/data-management` still works) → `.build/soak.py run --base http://<homeassistant>:8098` (or `EMT_SOAK_BASE`) → save the log with

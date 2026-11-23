@@ -95,6 +95,7 @@ about 1440 × 900, dark theme, the page only.
 | Repository | Holds |
 |---|---|
 | `RGx01/EMT` (this one, public) | EMT from 2 Nov 2026, when its history was rewritten clean of real account details |
+| `RGx01/EMT_beta` (public) | The betas from the first release on: this repository's `dev` plus one commit that makes it the separate add-on "EMT (beta)" (*Betas*, below). Issues off. |
 | `RGx01/EMT-archive` (private) | The same work before that: its issues and PRs. A `#NNN` in a history document, or `RGx01/EMT-archive#NNN` in a commit message, is there. |
 | `RGx01/energy-meter-tracker-addon` (public) | v4 from 10 Nov 2026, when it was recreated as one commit: 4.5.25's runtime files, no tests or docs. Critical fixes only. Issues and wiki are off; v4's reports come here. |
 | `RGx01/energy-meter-tracker-addon-archive` (private) | v4 before that: its history, issues, PRs, wiki and tests, and `docs/ROADMAP_archive.md`, which records why v4's decisions were made. A v4 `#NNN` is there. |
@@ -105,26 +106,47 @@ the public repository's files by a PR there.
 
 ## Releasing
 
-Versions are CalVer, `YYYY.M.PATCH`, the month the release's: `2026.11.0`, `2026.11.1`, `2026.12.0`.
-A beta is Home Assistant's `bN` on the version it leads to: `2026.11.0b1`, `2026.11.0b2`, then
-`2026.11.0`. `_version_key` (`web/server.py`) sorts a beta before its release.
+Versions are CalVer, `YYYY.M.PATCH`, the month the release's: `2026.12.0` (the first release, 1 December
+2026), `2026.12.1`, `2027.1.0`. A beta is Home Assistant's `bN` on the version it leads to: `2027.1.0b1`,
+`2027.1.0b2`, then `2027.1.0`. `_version_key` (`web/server.py`) sorts a beta before its release. The betas
+before the first release were `2026.11.0b1` to `2026.11.0b33`; they never led to a `2026.11.0`.
+
+**`main` takes releases only.** Home Assistant's add-on store reads `config.yaml` on a repository's default
+branch and has no beta channel, so anything merged to `main` reaches every install. Until the first
+release that was every beta (b1 to b33); from it, betas come from **`RGx01/EMT_beta`** (below).
 
 1. On a branch from `dev`: `config.yaml`'s `version:`, and `CHANGELOG.md`'s `[Unreleased]` heading is
-   **renamed** to that version with its date (`## [2026.11.0b1] — 2026-11-02`), leaving no `[Unreleased]`
+   **renamed** to that version with its date (`## [2026.12.0] — 2026-12-01`), leaving no `[Unreleased]`
    above it: the add-on store shows the top of the file, and an empty one there made b30 read as
    unreleased. The next change's entry adds the heading back. `tests/test_changelog_shape.py` checks it,
    and on a PR into `main` that no `[Unreleased]` heading is left at all. PR to `dev`, merge.
 2. PR `dev` → `main`; the PR body is the release note. Merge once its **CodeQL** check is green with no new alerts (below).
-3. Tag `main` and push the tag: `git tag -s v2026.11.0b1 -m 2026.11.0b1 && git push origin v2026.11.0b1`.
-4. A GitHub release on the tag. **Until the first release, `2026.11.0`, a beta is a full release marked
-   Latest** (from b17, 10 Nov 2026), so the repository page shows it; GitHub's sidebar shows only the latest
-   full release, and lists tags when there is none. **From `2026.11.0` on, a beta is a pre-release** — a
-   stable install asks for `/latest` (below), which would otherwise offer it a beta.
+3. Tag `main` and push the tag: `git tag -s v2026.12.0 -m 2026.12.0 && git push origin v2026.12.0`.
+4. A GitHub release on the tag, a full release marked **Latest**.
 
-A supervised install sees the update from `config.yaml` on `main` (the add-on store reads the default
-branch). A standalone install has no store: its *update available* notice reads this repository's
-GitHub releases (`/api/update-check`) — the latest release, or, on a beta, the newest of the last 20
-including pre-releases. So step 4 is what tells standalone users.
+A supervised install sees the update from `config.yaml` on `main`. A standalone install has no store: its
+*update available* notice reads this repository's GitHub releases (`/api/update-check`) — the latest
+release, or, on a beta, the newest of the last 20 including pre-releases. So step 4 is what tells
+standalone users.
+
+### Betas: `RGx01/EMT_beta`
+
+A separate public repository, so a beta reaches only those who add it. Its `main` is this repository's
+`dev` plus **one commit** that makes it its own add-on beside EMT: name "EMT (beta) — Energy Meter
+Tracker", slug `emt_beta`, direct port **8090**, sidebar "EMT beta", its `repository.json`, a README
+banner, and `tests/test_beta_manifest.py` pinning those. Everything else — the code's links to this
+repository's issues and releases included — is EMT's. A different slug is a different add-on (the slug
+rule, above): a tester moves between EMT and EMT (beta) with a backup and a restore.
+
+1. Here: the beta's version and changelog heading on a branch from `dev`, as step 1 above
+   (`2027.1.0b1`), PR to `dev`, merge. Not to `main`.
+2. In a clone of EMT_beta with this repository as a second remote (`emt`): `git fetch emt && git merge
+   emt/dev`, then push its `main`. The one commit stays on top; a conflict is only ever in the lines it
+   changes.
+3. Tag the beta **here**, on `dev`'s merge commit, and make a GitHub **pre-release** on it (never
+   Latest): a stable install asks `/latest`, which leaves pre-releases out; a beta install reads them.
+
+Its issues are off: beta reports come here, saying it is a beta.
 
 ## CodeQL
 

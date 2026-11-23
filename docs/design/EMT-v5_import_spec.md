@@ -1363,8 +1363,7 @@ silently stops testing anything the day v4 reaches .15.
    *Action, not an answer:* `FLOOR_VERSION` is pinned as the last step before v5's first release,
    from whatever v4 has actually reached by then, and §9's positive fixture is regenerated at that
    version. On the release checklist, not in this paragraph. **Currently `4.5.23`** (v21; was `4.5.22` in v17,
-   `4.5.21` in v13, `4.5.19` in v12, `4.5.18` in v11, `4.5.17` in v10, `4.5.16` in v9, `4.5.15` in v8). The release-checklist step stays: confirm the final v4 release, and capture
-   the positive fixture at it.
+   `4.5.21` in v13, `4.5.19` in v12, `4.5.18` in v11, `4.5.17` in v10, `4.5.16` in v9, `4.5.15` in v8). **Pinned for the first release on 23 Nov 2026:** v4 has reached 4.5.25, and neither 4.5.24 nor 4.5.25 carries a heal, so the floor stays `4.5.23` and its positive fixture (12 Oct 2026) stands. On release day (1 Dec 2026) only a v4 heal released before then would move it.
 
    *(This question originally read "does the required `heal_level` ever rise?" and the answer is
    unchanged in substance — only the thing being compared is now a version rather than an integer.)*

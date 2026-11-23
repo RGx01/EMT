@@ -58,9 +58,16 @@ SCHEMA_VERSION = 1
 # v4-shaped, whoever wrote it: v4, or a v5 build before the marker, whose `written_by`
 # (4.5.22-a23) cannot tell it from v4. `schema_version` cannot either: it reads 1 on every
 # v4 database (import spec §3). A revision, raised by each change to what v5 stores
-# (the provenance words, the band, the column drop); a restore refuses a v5 backup of any
-# other revision until the first release fixes the baseline.
+# (the provenance words, the band, the column drop). A restore refuses a backup of an older
+# revision (a development build's, before the betas) or a newer one.
+#
+# The first release (2026.12.0) fixes the baseline: every beta and released EMT writes revision 5,
+# and its backups must restore into every later EMT. A change that adds a column needs no new
+# revision — `_ensure_schema` adds it on open, so a restored backup gains it. One that changes what a
+# stored value means, or drops one, raises EMT_SCHEMA and must bring a revision-5 backup forward on
+# restore instead of refusing it (tests/test_schema_baseline.py stops the raise until it does).
 EMT_SCHEMA = 5
+EMT_SCHEMA_RELEASED = 5   # the oldest revision a restore must accept: the first release's
 #   1  10 Oct 2026  the marker itself (v4's schema and words)
 #   2  10 Oct 2026  rate_source 'measured' -> 'settled'
 #   3  10 Oct 2026  imp_kwh_remainder, imp_cost_remainder, rate_reconciled dropped
