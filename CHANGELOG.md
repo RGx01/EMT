@@ -5,7 +5,12 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b33] — 2026-11-23
+
+**The last beta here.** EMT's first release, **2026.12.0**, comes to this repository on 1 December 2026,
+and every install from it updates to that. Betas after it come from a separate repository,
+[EMT_beta](https://github.com/RGx01/EMT_beta): a separate add-on, "EMT (beta)", installed beside or
+instead of EMT; your data moves across with a backup and a restore.
 
 - **The Agile cards show everything published.** They ran 24 hours either side of now, so once tomorrow's
   prices were out (about 4pm) the last few hours to 23:00 tomorrow — the evening peak — were cut off. They now

@@ -12,6 +12,9 @@ its 6-hour cap, and your history settled against Octopus's own bill.
 
 > **Public beta.** EMT is open to anyone to try before its first release. Expect rough edges;
 > please report them — see [BETA.md](BETA.md).
+>
+> **2026.11.0b33 is the last beta here.** EMT's first release, **2026.12.0**, comes to this repository on
+> 1 December 2026. Betas after it come from [EMT_beta](https://github.com/RGx01/EMT_beta), a separate add-on.
 
 EMT is the successor to [Energy Meter Tracker v4](https://github.com/RGx01/energy-meter-tracker-addon).
 It is a **new add-on with its own slug** (`emt`), not an upgrade: it installs beside v4, runs beside
