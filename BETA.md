@@ -53,6 +53,9 @@ Please don't paste MPANs, your account number or your address into an issue.
 
 - **Updates** arrive in Home Assistant's add-on store like any other add-on's; each beta is
   `2026.11.0b1`, `b2`, …
+- **After 1 December 2026** this repository carries releases only: 2026.12.0 is the first, and every
+  install from it updates to it. Later betas come from [EMT_beta](https://github.com/RGx01/EMT_beta), a
+  separate add-on ("EMT (beta)"); move your data across with a backup and a restore.
 - **Removing EMT** deletes its data (`/data`). Its backups are in
   `/share/energy_meter_tracker_backup_<site>/` and stay, unless you delete them. v4 is unaffected.
 

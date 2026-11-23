@@ -5,6 +5,21 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b33] — 2026-11-23
+
+**The last beta here.** EMT's first release, **2026.12.0**, comes to this repository on 1 December 2026,
+and every install from it updates to that. Betas after it come from a separate repository,
+[EMT_beta](https://github.com/RGx01/EMT_beta): a separate add-on, "EMT (beta)", installed beside or
+instead of EMT; your data moves across with a backup and a restore.
+
+- **The Agile cards show everything published.** They ran 24 hours either side of now, so once tomorrow's
+  prices were out (about 4pm) the last few hours to 23:00 tomorrow — the evening peak — were cut off. They now
+  run from 24 hours back to the last published half-hour.
+- **The Overview's text is 12px at least.** The power cards' charts, their axes and legends, the gauges'
+  units and every card title were 9–11px; none is under 12px now, and the expanded cards follow. The Meter's
+  reading is the car's size and stays on one line, and the gauges' tiny end labels (Export/Import, Out/In, 0)
+  are gone — the reading, its sign and the Meter's pill already say which way the power is going.
+
 ## [2026.11.0b32] — 2026-11-22
 
 - **A hidden Agile card comes back up to date.** Hiding an Agile card stopped EMT fetching its prices, so
