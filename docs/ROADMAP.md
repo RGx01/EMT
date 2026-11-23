@@ -35,9 +35,11 @@ missing and where it stands; the done history, with every decision's story, is i
 - **Comparing eras.** Home eras mark the home's changes on the charts; usage, cost and carbon *per
   era*, compared like for like, is not built (history G.1).
 - **The writer thread, held in reserve** (A.1). On an SD card single commits stall the loop 2–6 s for
-  about a minute after a restore or an update. A writer thread is designed
-  ([design/EMT-v5_A1_writer_thread_design.md](design/EMT-v5_A1_writer_thread_design.md)), not built;
-  the stall was accepted on 5 Oct 2026.
+  about a minute after a restore or an update, and — the soak of 21–23 Nov 2026 showed — in normal
+  running too: several a day, mostly at a half-hour rollover, up to ~26 s. Nothing is lost; a
+  reconnect no longer re-runs startup on top of one unless Home Assistant was down. A writer thread is
+  designed ([design/EMT-v5_A1_writer_thread_design.md](design/EMT-v5_A1_writer_thread_design.md)), not
+  built; the stall was accepted on 5 Oct 2026, and again for the first release.
 
 ## Open questions
 

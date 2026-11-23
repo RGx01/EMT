@@ -5,6 +5,12 @@ sweep's startup hold followed (#97, soak 18), and §A.1 was closed with a caveat
 2–6 s single-commit stalls after a restore or upgrade on SD storage, normal running clean. This is
 the fix for that remainder if it is ever needed.*
 
+*Since, 23 Nov 2026: the soak of 21–23 Nov (b31–b33, a Pi 4 on an SD card) showed the stalls in
+normal running too — several a day, mostly at a half-hour rollover, single commits of up to ~26 s with
+no WAL checkpoint inside them. Home Assistant dropped the WebSocket after the longest, and the
+reconnect re-ran startup, stalling the loop again; a reconnect now re-runs startup only when Home
+Assistant was down. The stalls themselves are what this design is for.*
+
 ---
 
 ## 1. The problem, measured

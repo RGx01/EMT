@@ -29,8 +29,11 @@ fixed.*
   `web/server.py` run the write on the loop and wait for it. Long background workers (a restore, a
   delete) open their own connection (`_own_store`).
 - The database runs in WAL mode with `synchronous=NORMAL`. On an SD card a single commit can stall the
-  loop for seconds for about a minute after a restore or an update; a writer thread is designed for
-  it and held in reserve ([ROADMAP](../ROADMAP.md)).
+  loop: 2–6 s for about a minute after a restore or an update, and in normal running several times a
+  day, mostly at a half-hour rollover, for up to ~26 s. Home Assistant may drop the WebSocket during
+  one; EMT reconnects and re-subscribes, and re-runs its startup only if Home Assistant itself was
+  down (a reconnect attempt was refused). A writer thread is designed for the stalls and held in
+  reserve ([ROADMAP](../ROADMAP.md)).
 
 ## The job coordinator
 
@@ -85,7 +88,7 @@ query budgets, reachability (`check_reachability.py`, whose headline the archite
 the GraphQL deprecation and field watch. A change that moves one of these updates its baseline in the
 same PR.
 
-**Reachability today: 10 of 1,622 definitions unreachable** (`check_reachability.py`). The suite
+**Reachability today: 10 of 1,623 definitions unreachable** (`check_reachability.py`). The suite
 asserts this line (`tests/test_b_design_figures.py`): a PR that adds or removes a definition updates it.
 The history of the figure is in the [architecture record](../history/design/EMT-v5_architecture.md) §4.
 

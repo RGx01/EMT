@@ -34,6 +34,24 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
+# A startup completed this recently is not re-run on a reconnect, whatever the cause.
+RECONNECT_STARTUP_COOLDOWN_S = 300
+
+
+def startup_rerun_wanted(ha_was_down: bool, since_startup_s: float) -> bool:
+    """Whether a reconnect to Home Assistant re-runs engine_startup.
+
+    Only when HA itself was down (a reconnect attempt was refused) and the last startup
+    is not recent. A drop where HA stayed up needs nothing: the listen loop re-subscribes
+    state_changed on every reconnect. Re-running the whole startup there (WAL checkpoint,
+    discovery, poll) is what hurt: on an SD card a 20 s commit stall held the loop, HA
+    dropped the socket, the reconnect re-ran startup, and that stalled the loop ~25 s
+    again (soak log, 23 Nov 2026). The cooldown still covers a reconnect storm right
+    after a startup (the chart render that used to start them is gone since C, 30 Sep
+    2026; a heavy startup remains)."""
+    return ha_was_down and since_startup_s >= RECONNECT_STARTUP_COOLDOWN_S
+
+
 async def main():
     logger.info("Energy Meter Tracker add-on starting")
 
@@ -84,27 +102,16 @@ async def main():
     # 3 — Run startup sequence (register triggers, gap detection, charts)
     await engine_startup(ha)
 
-    # Register reconnect handler — re-runs startup if HA genuinely restarted, but
-    # NOT on a brief WS flap. Re-running the whole startup (WAL checkpoint, backup,
-    # discovery, poll, chart render) saturates the single event loop; that stalls the
-    # WS heartbeat, HA drops the socket, we reconnect, and it re-runs again — a self-
-    # sustaining reconnect storm (seen after a large delete's chart rebuild). The
-    # listen loop already re-subscribes state_changed on every reconnect, so a flap
-    # needs no startup. Only re-run after a genuine outage (a while since the last
-    # startup completed).
+    # Register reconnect handler — re-runs startup only when HA itself was down.
     import engine as _eng
-    # The chart render that was the usual flap trigger is gone (C, 30 Sep 2026: the
-    # charts are drawn in the browser); the cooldown still covers a heavy startup.
-    RECONNECT_STARTUP_COOLDOWN_S = 300
-    async def on_reconnect():
+    async def on_reconnect(ha_was_down: bool = False):
         since = _eng.seconds_since_startup()
-        # Skip the heavy startup re-run on a self-inflicted flap: a startup completed
-        # recently.
-        if since < RECONNECT_STARTUP_COOLDOWN_S:
-            logger.info("main: HA reconnected (%.0fs since startup) — skipping startup "
-                        "re-run (WS re-subscribed; avoids reconnect storm)", since)
+        if not startup_rerun_wanted(ha_was_down, since):
+            logger.info("main: HA reconnected (%s, %.0fs since startup) — skipping startup "
+                        "re-run (WS re-subscribed)",
+                        "HA was down" if ha_was_down else "HA stayed up", since)
             return
-        logger.info("main: HA reconnected — re-running engine startup")
+        logger.info("main: HA reconnected after an outage — re-running engine startup")
         await engine_startup(ha)
     ha._on_reconnect = on_reconnect
 
