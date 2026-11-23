@@ -1230,6 +1230,20 @@ deprecation check finds 9 today: `provider` on eight SmartFlex types (removal 15
 
 ---
 
+### The first release's commitments (23 Nov 2026)
+
+- [x] **The import floor, pinned.** `FLOOR_VERSION` stays **4.5.23**: v4 has reached 4.5.25, and
+      neither 4.5.24 (#513) nor 4.5.25 (#523) carries a heal, so 4.5.23 is still the last v4 release
+      that added one. The positive fixture taken at 4.5.23 on 12 Oct 2026 stands (import spec §9).
+- [x] **EMT's own backups restore forward.** Every beta wrote `EMT_SCHEMA` revision 5 (since 10 Oct
+      2026), and the restore refused any other. From the first release revision 5 is the baseline
+      (`block_store.EMT_SCHEMA_RELEASED`): a new column needs no revision (`_ensure_schema` adds it on
+      open), and a raise of the revision must bring a revision-5 backup forward on restore —
+      `tests/test_schema_baseline.py` stops the raise until it does.
+- [x] **Betas leave `main`.** Home Assistant's store has no beta channel, so from the first release
+      `main` takes releases only and betas ship from `RGx01/EMT_beta`, a separate add-on (slug
+      `emt_beta`, port 8090; DEVELOPMENT.md *Betas*). 2026.11.0b33 was the last beta here.
+
 ## Open questions
 
 Carried from the programme map §4 and the import spec §10. These need answers before the
