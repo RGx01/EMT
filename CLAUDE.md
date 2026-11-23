@@ -56,7 +56,7 @@ archive clone to the public v4 repository.
 2026.11.0b32. The slug is `emt`, the direct port 8098. Releasing: `docs/DEVELOPMENT.md`.
 
 **Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via Data Management (through ingress
-since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-management` still works) → `.build/soak.py run` → save the log with
+since 14 Oct 2026, when the upload went up in pieces; `http://<homeassistant>:8098/data-management` still works) → `.build/soak.py run --base http://<homeassistant>:8098` (or `EMT_SOAK_BASE`) → save the log with
 `ha apps logs local_emt_soak --lines 50000` (the Pi's clone keeps `slug: "emt_soak"` locally; the repo's is `emt` since 2 Nov 2026 — docs/DEVELOPMENT.md) (`ha addons` is deprecated) → `.build/soak.py scan-log <log> --since <restore time>`.
 
 ## Read these before v5 work
