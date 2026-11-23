@@ -5,7 +5,8 @@ EMT soak — workstream A §5.4 (and B §5.6 from the log).
 Three modes, all run from a workstation against the soak add-on. Standard library
 only, so it needs nothing installed.
 
-  run             python3 .build/soak.py run --base http://192.168.20.16:8098
+  run             python3 .build/soak.py run --base http://<homeassistant>:8098
+                  (or set EMT_SOAK_BASE once instead of --base)
   re-report       python3 .build/soak.py report soak-…/requests.jsonl
   scan a log      python3 .build/soak.py scan-log addon.log
   compare         python3 .build/soak.py compare-segments segments_before.db blocks.db
@@ -824,7 +825,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="EMT soak (A §5.4, B §5.6)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--base", default="http://192.168.20.16:8098")
+    # The soak add-on's direct port; no default address, so no one's LAN is in the repository.
+    r.add_argument("--base", default=os.environ.get("EMT_SOAK_BASE"),
+                   required=not os.environ.get("EMT_SOAK_BASE"),
+                   help="http://<homeassistant>:8098, or set EMT_SOAK_BASE")
     # First Pi soak ran 4 workers at 8 req/s: heavy whole-history routes then queued
     # behind each other on waitress's 4 threads, and 57 requests hit the 30 s timeout
     # for reasons that had nothing to do with the writer. 2 at 4 leaves headroom.
