@@ -50,7 +50,11 @@ class TheBaseline(unittest.TestCase):
         p = os.path.join(tempfile.mkdtemp(), "blocks.db")
         bs.BlockStore(p).close()
         c = sqlite3.connect(p)
-        c.execute("ALTER TABLE sub_meter_history DROP COLUMN temp_c")
+        # rebuilt without it, not DROP COLUMN: CI's older SQLite cannot drop past the table's comments (#221)
+        keep = ", ".join(r[1] for r in c.execute("PRAGMA table_info(sub_meter_history)") if r[1] != "temp_c")
+        c.executescript("CREATE TABLE _old AS SELECT %s FROM sub_meter_history; DROP TABLE sub_meter_history; "
+                        "ALTER TABLE _old RENAME TO sub_meter_history;" % keep)
+        self.assertNotIn("temp_c", [r[1] for r in c.execute("PRAGMA table_info(sub_meter_history)")])
         c.commit()
         c.close()
         bs.BlockStore(p).close()
