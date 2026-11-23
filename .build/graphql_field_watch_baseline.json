@@ -377,6 +377,10 @@
     "validFrom",
     "validTo"
   ],
+  "QuotingRateType": [
+    "enum:PRODUCT_RATE",
+    "enum:SHARED_RATE"
+  ],
   "RateTypeChoices": [
     "enum:ECONOMY7",
     "enum:STANDARD",
