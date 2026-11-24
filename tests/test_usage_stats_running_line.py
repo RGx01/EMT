@@ -100,6 +100,23 @@ class TheLine(unittest.TestCase):
         self.assertEqual(_node(src), [True, True, True])
 
 
+@unittest.skipUnless(shutil.which("node"), "node not available")
+class ThinWhereTheBarsAreMany(unittest.TestCase):
+    # 24 Nov 2026, the user: a span by the day (~860 bars) drew Net and Running total as a thick band
+
+    def test_by_the_number_of_bars(self):
+        got = _node(_fn("barLineStyle") + "\nconsole.log(JSON.stringify([48, 62, 63, 186, 187, 860]"
+                    ".map(barLineStyle)));")
+        self.assertEqual(got, [{"point": 3, "width": 2}, {"point": 3, "width": 2}, {"point": 0, "width": 1.5},
+                               {"point": 0, "width": 1.5}, {"point": 0, "width": 1}, {"point": 0, "width": 1}])
+
+    def test_both_lines_take_it(self):
+        f = _fn("barGetDatasets")
+        self.assertIn("var _ls = barLineStyle(aggList.length);", f)
+        self.assertIn("borderWidth: _ls.width, pointRadius: _ls.point, pointHitRadius: 6,", f)
+        self.assertIn("borderWidth: _ls.width, pointRadius: _ls.point ? 2 : 0, pointHitRadius: 6,", f)
+
+
 class TheToolbar(unittest.TestCase):
 
     def test_the_box(self):
