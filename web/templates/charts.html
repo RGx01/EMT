@@ -3245,6 +3245,14 @@ function barBrSyncUI() {
   if (on) barBrSyncPicker();
 }
 
+// The Net and Running total lines by the number of bars (24 Nov 2026, the user: a span by the day, ~860 bars, drew
+// them as a thick band): a dot on each point up to two months' days (HH's 48 among them), none beyond — a hover
+// still shows one — and a thinner line past half a year. Pure.
+function barLineStyle(n) {
+  if (n <= 62) return {point: 3, width: 2};
+  return {point: 0, width: n <= 186 ? 1.5 : 1};
+}
+
 function barGetDatasets(labels, aggList, isHH) {
   if (barBrackets()) return barBrDatasets(aggList);
   // Import meters stacked above axis, export below, all in same stack
@@ -3306,13 +3314,14 @@ function barGetDatasets(labels, aggList, isHH) {
     }
   }
 
+  var _ls = barLineStyle(aggList.length);
   if (barShowNet()) {
     datasets.push({
       type: 'line', label: barNetLabel(), _net: true,
       data: barNetSeries(aggList, isHH),
       yAxisID: isHH ? 'yNet' : 'y',
       borderColor: barNetColor(), backgroundColor: barNetColor(),
-      borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, fill: false, tension: 0,
+      borderWidth: _ls.width, pointRadius: _ls.point, pointHitRadius: 6, pointHoverRadius: 5, fill: false, tension: 0,
       stack: 'net',           // its own stack: the line is the net, not stacked on the bars
       order: -1               // drawn over the bars
     });
@@ -3323,7 +3332,7 @@ function barGetDatasets(labels, aggList, isHH) {
       data: barNetSeries(aggList, false, true),
       yAxisID: 'yNet',
       borderColor: barNetColor(), backgroundColor: barNetColor(), borderDash: [6, 4],
-      borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, fill: false, tension: 0,
+      borderWidth: _ls.width, pointRadius: _ls.point ? 2 : 0, pointHitRadius: 6, pointHoverRadius: 5, fill: false, tension: 0,
       stack: 'run', order: -1
     });
   }
