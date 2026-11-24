@@ -107,7 +107,7 @@ class TheLegendInMonthOrder(unittest.TestCase):
 
     def test_the_legends_read_it(self):
         self.assertIn("_ds.forEach(function(d) { el.innerHTML += dot(barDsColor(d), d.label); });", _fn("barBuildLegend"))
-        self.assertIn("(byN[n] ? barDsColor(byN[n]) : barBrColor(n, ns) + ';opacity:.25')", _fn("barBrScale"))
+        self.assertIn("(byN[n] ? barDsColor(byN[n]) : barBrColor(n, ns, side || undefined, !!side) + ';opacity:.25')", _fn("barBrScale"))
         self.assertIn("if (typeof base === 'string') ds._baseColor = base;", _fn("barApplyYearGradient"))
 
 

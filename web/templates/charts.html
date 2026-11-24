@@ -2478,6 +2478,7 @@ var barAccStart = 'jan';          // PR 3: 'jan' | 'billing' | 'tariff:<YYYY-MM-
 var barAccIncStanding = false;
 var barAccCharts = [];
 var barBrSeries = 'meter';        // 'meter' (the whole meter) | 'electricity_main' (the house) | a device id | 'export'
+                                  // | 'both': the whole meter's import above the axis, export below (24 Nov 2026)
 var barBrPct = false;             // each bracket's share of the bucket's kWh
 var barBrWidth = 2.5;             // pence; the server's width_p
 var barBrDays = null;             // {YYYY-MM-DD: {series: {n: [kWh, £]}}}
@@ -2532,12 +2533,17 @@ function barBrFailed(e) {
 
 function barBrOf(agg) { return ((agg && agg.br) || {})[barBrSeries] || {}; }
 
-// The brackets with usage across the buckets, cheapest first.
-function barBrNs(aggList) {
+// The brackets with usage across the buckets, cheapest first: the series shown's, or `series`'s.
+function barBrNs(aggList, series) {
   var seen = {};
-  aggList.forEach(function(agg) { Object.keys(barBrOf(agg)).forEach(function(n) { seen[n] = true; }); });
+  aggList.forEach(function(agg) {
+    var b = series ? (((agg && agg.br) || {})[series] || {}) : barBrOf(agg);
+    Object.keys(b).forEach(function(n) { seen[n] = true; });
+  });
   return Object.keys(seen).map(Number).sort(function(a, b) { return a - b; });
 }
+// Import & export: the whole meter's import above the axis and the export below, each in its own colours
+function barBrBoth() { return barBrSeries === 'both'; }
 
 function barBrPence(v) {
   var t = (Math.round(v * 100) / 100).toString();
@@ -2556,15 +2562,20 @@ function barBrLabel(n) {
 // money out: an import plunge is blue; export, earned, runs blue to purple, the best-paid bracket the
 // deepest purple; a negative export price, paid to export, is red. `side`: Flow's 'import' or 'export'
 // bands, whatever Rate brackets shows; else Rate brackets' series.
-function barBrColor(n, ns, side) {
+// `pair`: export drawn beside import (Import & export, 24 Nov 2026), in hues of its own so neither side's
+// brackets take the other's colour — earned indigo to violet, paid to export magenta — where alone it is
+// blue to purple and red, as import's plunge blue and dearest red would be beside it.
+function barBrColor(n, ns, side, pair) {
   var dark = barIsDark();
   var i = ns.indexOf(n), alt = i % 2 ? (dark ? 14 : 13) : 0;
   var ex = side ? side === 'export' : barBrSign() < 0;
-  if (n < 0) return ex ? 'hsl(0, ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)'
+  if (n < 0) return ex ? (pair ? 'hsl(320, 65%, ' + ((dark ? 52 : 42) + alt) + '%)'
+                               : 'hsl(0, ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)')
                        : 'hsl(215, 70%, ' + ((dark ? 50 : 40) + alt) + '%)';
   var pos = ns.filter(function(x) { return x >= 0; });
   var lo = pos[0], hi = pos[pos.length - 1];
   var t = hi > lo ? (n - lo) / (hi - lo) : 0;
+  if (ex && pair) return 'hsl(' + Math.round(250 + 40 * t) + ', 55%, ' + ((dark ? 62 : 50) + alt - 10 * t) + '%)';
   if (ex) return 'hsl(' + Math.round(205 + 70 * t) + ', 62%, ' + ((dark ? 54 : 46) + alt - 8 * t) + '%)';
   return 'hsl(' + Math.round(130 * (1 - t)) + ', ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)';
 }
@@ -2575,23 +2586,31 @@ function barBrVal(v) { return barMetric === 'cost' ? v[1] : v[0]; }
 function barBrSign() { return barBrSeries === 'export' ? -1 : 1; }
 
 function barBrDatasets(aggList) {
-  var ns = barBrNs(aggList), sg = barBrSign();
+  if (barBrBoth()) return barBrSideDatasets(aggList, 'meter', 1, 'import', 'Import ')
+                           .concat(barBrSideDatasets(aggList, 'export', -1, 'export', 'Export '));
+  return barBrSideDatasets(aggList, barBrSeries, barBrSign(), null, '');
+}
+// One series' brackets, drawn above the axis (`sg` 1) or below (-1). `side` names the colours ('import' or
+// 'export'; null, the series shown's) and `prefix` the labels, for Import & export.
+function barBrSideDatasets(aggList, series, sg, side, prefix) {
+  function of(agg) { return ((agg && agg.br) || {})[series] || {}; }
+  var ns = barBrNs(aggList, series);
   // % is each bracket's share of the bar's kWh, in kWh and Cost alike: a plunge's credit takes
   // from a bar's £, so a share of £ could pass 100% beside it, and below 0 means nothing
   var kwh = aggList.map(function(agg) {
-    var b = barBrOf(agg);
+    var b = of(agg);
     return Object.keys(b).reduce(function(s, n) { return s + b[n][0]; }, 0);
   });
   return ns.map(function(n) {
     return {
-      label: barBrLabel(n), _bracket: n,
+      label: prefix + barBrLabel(n), _bracket: n, _side: side || (sg < 0 ? 'export' : 'import'), _sign: sg,
       data: aggList.map(function(agg, i) {
-        var v = barBrOf(agg)[n];
+        var v = of(agg)[n];
         if (!v) return 0;
         if (barBrPct) return kwh[i] > 0 ? sg * Math.round(v[0] / kwh[i] * 10000) / 100 : 0;
         return sg * Math.round(barBrVal(v) * 1000) / 1000;
       }),
-      backgroundColor: barBrColor(n, ns), borderRadius: 0, stack: 'main'
+      backgroundColor: barBrColor(n, ns, side || undefined, !!side), borderRadius: 0, stack: 'main'
     };
   });
 }
@@ -2610,6 +2629,7 @@ function barBrSeriesList() {
   }
   devs.forEach(function(m) { out.push({ id: m.id, label: m.label }); });
   if (have.export) out.push({ id: 'export', label: 'Export' });
+  if (have.export && have.meter) out.push({ id: 'both', label: 'Import & export' });
   return out;
 }
 
@@ -2645,6 +2665,14 @@ function barBrSum(aggList, series) {
   return out;
 }
 
+// The tooltip's line for a bar's series: its kWh, £ and average price
+function barBrFootLine(agg, series, label) {
+  var bs = barBrSum([agg], series), k = 0, c = 0;
+  Object.values(bs).forEach(function(v) { k += v[0]; c += v[1]; });
+  return label + ': ' + k.toFixed(3) + ' kWh  ' + (c < 0 ? '-' : '') + barCurrency + Math.abs(c).toFixed(2)
+    + (k > 0 ? '  (' + (c / k * 100).toFixed(1) + 'p/kWh)' : '');
+}
+
 function barBrAvg(sum) {
   var k = 0, c = 0;
   Object.values(sum).forEach(function(v) { k += v[0]; c += v[1]; });
@@ -2656,6 +2684,13 @@ function barBrNote(aggList) {
   if (!el) return;
   if (!barBrackets()) { el.style.display = 'none'; return; }
   if (barBrError) { el.textContent = "Couldn't read the rate brackets: " + barBrError; el.style.display = ''; return; }
+  if (barBrBoth()) {
+    var bi = barBrAvg(barBrSum(aggList, 'meter')), be = barBrAvg(barBrSum(aggList, 'export'));
+    el.textContent = (bi == null ? 'No grid import' : 'Import paid ' + bi.toFixed(1) + 'p/kWh on average') + '; '
+      + (be == null ? 'no export' : 'export earned ' + be.toFixed(1) + 'p/kWh') + ' in this range.';
+    el.style.display = '';
+    return;
+  }
   var mine = barBrAvg(barBrSum(aggList, barBrSeries));
   var all = barBrAvg(barBrSum(aggList, 'meter'));
   var ex = barBrSeries === 'export';
@@ -2668,27 +2703,41 @@ function barBrNote(aggList) {
 }
 
 function barBrBuildTable(tbl, aggList) {
-  var sum = barBrSum(aggList, barBrSeries);
-  var ns = barBrNs(aggList);                  // the chart's brackets, so the colours agree
+  var both = barBrBoth();
+  var ex = barBrSeries === 'export';
+  var html = '<thead><tr><th>Rate bracket</th><th>kWh</th><th>' + (both ? 'Cost / credit' : ex ? 'Credit' : 'Cost')
+    + '</th><th>Avg p/kWh</th><th>Share of kWh</th></tr>';
+  if (!both) {
+    var one = barBrTableRows(aggList, barBrSeries, null, ex);
+    tbl.innerHTML = html + one.totals + '</thead><tbody>' + one.rows + '</tbody>';
+    return;
+  }
+  // Import & export: a section each, its totals at its head
+  var imp = barBrTableRows(aggList, 'meter', 'import', false), exp = barBrTableRows(aggList, 'export', 'export', true);
+  tbl.innerHTML = html + '</thead><tbody>' + imp.totals.replace('>Totals<', '>Import<') + imp.rows
+    + exp.totals.replace('>Totals<', '>Export<') + exp.rows + '</tbody>';
+}
+// A series' rows for the table: {totals: its totals row, rows: a row a bracket}
+function barBrTableRows(aggList, series, side, ex) {
+  var sum = barBrSum(aggList, series);
+  var ns = barBrNs(aggList, series);          // the chart's brackets, so the colours agree
   var tk = 0, tc = 0;
   ns.forEach(function(n) { tk += sum[n][0]; tc += sum[n][1]; });
   function money(v) { var a = Math.abs(v).toFixed(2); return (v < 0 && Number(a) !== 0 ? '-' : '') + barCurrency + a; }
   function avg(k, c) { return k > 0 ? (c / k * 100).toFixed(2) + 'p' : '—'; }
   function share(k) { return tk > 0 ? (k / tk * 100).toFixed(1) + '%' : '—'; }
-  var ex = barBrSeries === 'export';
-  var html = '<thead><tr><th>Rate bracket</th><th>kWh</th><th>' + (ex ? 'Credit' : 'Cost')
-    + '</th><th>Avg p/kWh</th><th>Share of kWh</th></tr>';
-  html += '<tr class="totals-row"><td style="font-weight:600;">Totals</td><td>' + tk.toFixed(3) + ' kWh</td><td>'
-    + money(tc) + '</td><td>' + avg(tk, tc) + '</td><td>' + (tk > 0 ? '100.0%' : '—') + '</td></tr></thead><tbody>';
+  var totals = '<tr class="totals-row"><td style="font-weight:600;">Totals</td><td>' + tk.toFixed(3) + ' kWh</td><td>'
+    + money(tc) + '</td><td>' + avg(tk, tc) + '</td><td>' + (tk > 0 ? '100.0%' : '—') + '</td></tr>';
+  var rows = '';
   ns.forEach(function(n) {
     var v = sum[n];
-    html += '<tr><td><span class="bar-legend-dot" style="background:' + barBrColor(n, ns) + ';margin-right:5px;"></span>'
+    rows += '<tr><td><span class="bar-legend-dot" style="background:' + barBrColor(n, ns, side || undefined, !!side) + ';margin-right:5px;"></span>'
       + barBrLabel(n) + '</td><td>' + v[0].toFixed(3) + ' kWh</td><td>' + money(v[1]) + '</td><td>'
       + avg(v[0], v[1]) + '</td><td>' + share(v[0]) + '</td></tr>';
   });
-  if (!ns.length) html += '<tr><td colspan="5" style="color:var(--muted);">' + (ex ? 'No export' : 'No grid import')
+  if (!ns.length) rows += '<tr><td colspan="5" style="color:var(--muted);">' + (ex ? 'No export' : 'No grid import')
     + ' in this range.</td></tr>';
-  tbl.innerHTML = html + '</tbody>';
+  return {totals: totals, rows: rows};
 }
 
 // ── Flow (docs/history/design/EMT-v5_flow_design.md) ─────────────────────────────────────────────────────
@@ -3742,7 +3791,7 @@ function barRender() {
             var v = c.raw;
             if (barBrackets()) {
               if (!v) return null;
-              v *= barBrSign();                       // export is drawn below the axis; its figures are not negative
+              v *= c.dataset._sign || barBrSign();    // export is drawn below the axis; its figures are not negative
               return ' ' + c.dataset.label + ': ' + (barBrPct ? v.toFixed(1) + '%' : barFmt(v));
             }
             if (barMetric === 'co2') return ' ' + c.dataset.label + ': ' + barCo2Fmt(v);
@@ -3757,11 +3806,9 @@ function barRender() {
             var agg = barGetDataForPeriod().aggList[idx];
             if (!agg) return '';
             if (barBrackets()) {
-              var _bs = barBrSum([agg], barBrSeries), _bk = 0, _bc = 0;
-              Object.values(_bs).forEach(function(v) { _bk += v[0]; _bc += v[1]; });
-              return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n' + barBrSeriesLabel(barBrSeries) + ': '
-                + _bk.toFixed(3) + ' kWh  ' + (_bc < 0 ? '-' : '') + barCurrency + Math.abs(_bc).toFixed(2)
-                + (_bk > 0 ? '\nAverage: ' + (_bc / _bk * 100).toFixed(1) + 'p/kWh' : '');
+              return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n' + (barBrBoth()
+                ? barBrFootLine(agg, 'meter', 'Import') + '\n' + barBrFootLine(agg, 'export', 'Export')
+                : barBrFootLine(agg, barBrSeries, barBrSeriesLabel(barBrSeries)));
             }
             if (barMetric === 'co2') {
               var net = agg.carbon_g_net; var tot = agg.carbon_g_total;
@@ -3800,7 +3847,8 @@ function barRender() {
                                   axes ? { stepSize: axes.y.step } : {},
                                   barBrackets() && barBrPct ? { callback: function(v) { return Math.abs(v) + '%'; } } : {}),
              grace: '2%' }, axes ? { min: axes.y.min, max: axes.y.max, grace: 0 } : {},
-             barBrackets() && barBrPct ? (barBrSign() < 0 ? { min: -100, max: 0, grace: 0 } : { min: 0, max: 100, grace: 0 }) : {}),
+             barBrackets() && barBrPct ? (barBrBoth() ? { min: -100, max: 100, grace: 0 }
+               : barBrSign() < 0 ? { min: -100, max: 0, grace: 0 } : { min: 0, max: 100, grace: 0 }) : {}),
         yNet: Object.assign({ display: netAxis, position: 'right', stacked: false,
              grid: { display: false },
              title: { display: netAxis, text: 'Running total', color: barGetTheme().axisC, font: {size:11} },
@@ -3937,20 +3985,20 @@ function barDsColor(d) {
 }
 
 // One bracket picked out in the bars, or none (null) for them all as drawn
-function barBrHighlight(n) {
+function barBrHighlight(n, side) {
   var ch = barChartInstance;
   if (!ch) return;
   ch.data.datasets.forEach(function(d) {
     if (d._bracket == null) return;
     if (d._color == null) d._color = d.backgroundColor;
-    d.backgroundColor = n == null || d._bracket === n ? d._color : barBrFaded(d._color);
+    d.backgroundColor = n == null || (d._bracket === n && (!side || d._side === side)) ? d._color : barBrFaded(d._color);
   });
   // Chart.js's hover mode. 'none' leaves a bar's shared options as they were, so the colour never reached the bars
   ch.update('active');
 }
 
-function barBrScale(el, ds) {
-  var byN = {};
+function barBrScale(el, ds, title) {
+  var byN = {}, side = barBrBoth() && ds.length ? ds[0]._side : null;
   ds.forEach(function(d) { byN[d._bracket] = d; });
   var ns = ds.map(function(d) { return d._bracket; });
   var first = ns[0], last = ns[ns.length - 1];
@@ -3958,14 +4006,14 @@ function barBrScale(el, ds) {
   var segs = '';
   for (var n = first; n <= last; n++) {
     segs += '<span data-n="' + n + '" style="flex:1 1 0;min-width:0;height:10px;-webkit-print-color-adjust:exact;print-color-adjust:exact;background:'
-      + (byN[n] ? barDsColor(byN[n]) : barBrColor(n, ns) + ';opacity:.25') + ';"></span>';
+      + (byN[n] ? barDsColor(byN[n]) : barBrColor(n, ns, side || undefined, !!side) + ';opacity:.25') + ';"></span>';
   }
   var ticks = barBrScaleTicks(lo, hi).map(function(p) {
     var move = p === lo ? '0' : p === hi ? '-100%' : '-50%';
     return '<span style="position:absolute;white-space:nowrap;left:' + ((p - lo) / (hi - lo) * 100) + '%;transform:translateX(' + move + ');">'
       + barBrPence(p) + 'p</span>';
   }).join('');
-  var rest = 'Rate, p/kWh';
+  var rest = (title ? title + ' rate' : 'Rate') + ', p/kWh';
   // the readout wraps under the strip where there is no room beside it (a phone)
   el.innerHTML = '<div style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:0 12px;flex:1 1 100%;width:100%;">'
     + '<div style="flex:1 1 300px;min-width:0;">'
@@ -3988,8 +4036,8 @@ function barBrScale(el, ds) {
     var v = e.target.dataset && e.target.dataset.n;
     if (v === undefined) return;
     v = Number(v);
-    read.textContent = barBrLabel(v) + (byN[v] ? '' : ': none');
-    barBrHighlight(byN[v] ? v : null);
+    read.textContent = (title ? title + ' ' : '') + barBrLabel(v) + (byN[v] ? '' : ': none');
+    barBrHighlight(byN[v] ? v : null, side);
   });
   strip.addEventListener('mouseleave', function() { read.textContent = rest; barBrHighlight(null); });
 }
@@ -4013,6 +4061,18 @@ function barBuildLegend() {
   if (barBrackets()) {
     // The brackets with usage in view, cheapest first
     var _ds = (barChartInstance ? barChartInstance.data.datasets : []).filter(function(d) { return d._bracket != null; });
+    if (_ds.length > BAR_BR_KEYS_MAX && barBrBoth()) {
+      // Import & export with many brackets: a strip each, import's then export's
+      [['import', 'Import'], ['export', 'Export']].forEach(function(sd) {
+        var part = _ds.filter(function(d) { return d._side === sd[0]; });
+        if (!part.length) return;
+        var box = document.createElement('div');
+        box.style.cssText = 'display:flex;flex:1 1 100%;width:100%;';
+        el.appendChild(box);
+        barBrScale(box, part, sd[1]);
+      });
+      return;
+    }
     if (_ds.length > BAR_BR_KEYS_MAX) { barBrScale(el, _ds); return; }
     _ds.forEach(function(d) { el.innerHTML += dot(barDsColor(d), d.label); });
     return;
