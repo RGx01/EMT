@@ -27,7 +27,8 @@ beta's data goes back to EMT the same way, with a backup and a restore, once the
 - Anything slow: a page that takes more than a few seconds, or the log's `engine loop lag` warnings.
 - Wording that is unclear, wrong or missing.
 
-The [changelog](CHANGELOG.md) on EMT_beta says what the beta changes.
+Each beta has a [release](https://github.com/RGx01/EMT_beta/releases) on EMT_beta saying what it changes;
+the [changelog](CHANGELOG.md)'s **Unreleased** section is the same list, building to the next release.
 
 ## What to send
 

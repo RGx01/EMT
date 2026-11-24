@@ -53,10 +53,11 @@ account details; the work before it, with its issues and PRs, is the private `RG
 in a commit message, is there. **Never push from the archive clone to `RGx01/EMT`,** nor from the v4
 archive clone to the public v4 repository.
 
-**Versions:** CalVer `YYYY.M.PATCH`. `main` held the betas, `2026.11.0b1` to **2026.11.0b33** (the last);
+**Versions:** CalVer `YYYY.M.PATCH`. `main` held the betas, `2026.11.0b1` to **2026.11.0b33** (the last here);
 the first release is **2026.12.0, on 1 December 2026**, and from it `main` takes releases only. Betas
-ship from `RGx01/EMT_beta` (local clone `~/code/EMT_beta`: this repo's `dev` plus one commit — slug
-`emt_beta`, port 8090), tagged here as pre-releases. The slug is `emt`, the direct port 8098.
+ship from `RGx01/EMT_beta` (local clone `~/code/EMT_beta`: this repo's `dev` plus two commits — slug
+`emt_beta`, port 8090, its update notice reading its own releases), versioned, tagged and released there
+as pre-releases from `2026.11.0b34` (24 Nov 2026). The slug is `emt`, the direct port 8098.
 Releasing: `docs/DEVELOPMENT.md`. EMT's own backups must restore forward from revision 5
 (`EMT_SCHEMA_RELEASED`).
 
