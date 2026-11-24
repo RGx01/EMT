@@ -34,6 +34,7 @@ HARNESS = """
 var barBrWidth = 2.5, barChartInstance = null, updates = 0;
 function barBrColor(n) { return 'hsl(' + n + ', 50%, 50%)'; }
 function barShowNet() { return false; }
+function barShowRun() { return false; }
 function barBrackets() { return true; }
 function ds(ns) { return ns.map(function (n) { return {_bracket: n, label: 'L' + n, backgroundColor: 'hsl(' + n + ', 62%, 48%)'}; }); }
 function range(a, b) { var o = []; for (var i = a; i <= b; i++) o.push(i); return o; }

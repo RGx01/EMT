@@ -125,7 +125,7 @@
   .bar-toolbar-left {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 6px 10px;
     flex-wrap: wrap;
   }
   .bar-toolbar-right {
@@ -135,7 +135,8 @@
   }
   /* The view (1 Nov 2026, the user): the toolbar's first choice, a little bolder, a rule after it */
   .bar-seg.bar-show .bar-seg-btn { font-weight: 600; }
-  .bar-tb-sep { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--border); }
+  /* A rule between every group (24 Nov 2026, the user); barTbSepSync hides one whose group is hidden */
+  .bar-tb-sep { width: 1px; align-self: stretch; margin: 2px 6px; background: var(--border); }
   /* The page's selects are full width (base.html); here each is as wide as its text */
   .bar-toolbar select { width: auto; max-width: 260px; }
   #bar-series-slot select { width: auto; max-width: 260px; }
@@ -593,25 +594,30 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <button class="bar-seg-btn"        onclick="barSetKind('span',this)" id="bar-span-btn" style="display:none"
                 title="A stretch you pick: a tariff, a stretch between its price changes, or an era">Span</button>
       </div>
+      <span class="bar-tb-sep" aria-hidden="true"></span>
       <div class="bar-seg" id="bar-res-seg" title="What each bar holds">
         <button class="bar-seg-btn"        onclick="barSetRes('hh',this)" data-res="hh" id="bar-hh-btn" title="A day's half-hours">HH</button>
         <button class="bar-seg-btn active" onclick="barSetRes('day',this)" data-res="day" id="bar-day-btn">Day</button>
         <button class="bar-seg-btn"        onclick="barSetRes('month',this)" data-res="month" id="bar-month-btn">Month</button>
         <button class="bar-seg-btn"        onclick="barSetRes('year',this)" data-res="year" id="bar-year-btn">Year</button>
       </div>
+      <span class="bar-tb-sep" aria-hidden="true"></span>
       <div class="bar-seg" id="bar-cal-seg">
         <button class="bar-seg-btn active" onclick="barSetCalendar(false,this)">Billing</button>
         <button class="bar-seg-btn"        onclick="barSetCalendar(true,this)">Calendar</button>
       </div>
+      <span class="bar-tb-sep" aria-hidden="true"></span>
       <div class="bar-seg" id="bar-metric-seg">
         <button class="bar-seg-btn active" onclick="barSetMetric('kwh',this)">kWh</button>
         <button class="bar-seg-btn"        onclick="barSetMetric('cost',this)" id="bar-cost-btn">Cost</button>
         <button class="bar-seg-btn"        onclick="barSetMetric('co2',this)"  id="bar-co2-btn"  style="display:none">CO₂</button>
       </div>
+      <span class="bar-tb-sep" aria-hidden="true"></span>
       <div class="bar-seg" id="bar-order-seg" style="display:none;" title="Order the bars by calendar date, or grouped by month across years">
         <button class="bar-seg-btn active" onclick="barSetOrder('date',this)">Date</button>
         <button class="bar-seg-btn"        onclick="barSetOrder('month',this)">Month</button>
       </div>
+      <span class="bar-tb-sep" aria-hidden="true"></span>
       <span id="bar-acc-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted); flex-wrap:wrap;">
         <span class="bar-seg" id="bar-acc-view" title="The running total along a time axis, or wound a year a turn">
           <button class="bar-seg-btn active" onclick="barSetAccView('line',this)">Line</button>
@@ -622,6 +628,7 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
           <button class="bar-seg-btn"        onclick="barSetAccMode('year',this)">Year by year</button>
         </span>
       </span>
+      <span class="bar-tb-sep" aria-hidden="true"></span>
       <span id="bar-br-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted);">
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="Each bracket's share of the bar's kWh">
           <input type="checkbox" id="bar-br-pct" onchange="barSetBrPct(this.checked)" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
@@ -655,6 +662,11 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
              title="Draw import minus export as a line over the bars">
         <input type="checkbox" id="bar-net-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
         <span id="bar-net-text">Net</span>
+      </label>
+      <label id="bar-run-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;"
+             title="Draw the net so far (import minus export, from the first bar) as a line on its own axis">
+        <input type="checkbox" id="bar-run-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
+        Running total
       </label>
       <label id="bar-tariff-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;"
              title="The account's tariffs: along the bars, import above the axis and export below; on Running total a band on Lifetime, dots on Year by year; hover one for its details">
@@ -1203,7 +1215,8 @@ function barPdfSettings() {
   add(lbl ? 'Range' : 'Years', lbl ? lbl.textContent.trim()
       : Array.from(barActiveYears).sort().join(', '));
   var opts = [['bar-standing-wrap', 'bar-standing-cb', 'Standing charge'],
-              ['bar-net-wrap', 'bar-net-cb', null], ['bar-tariff-wrap', 'bar-tariff-cb', 'Tariffs'],
+              ['bar-net-wrap', 'bar-net-cb', null], ['bar-run-wrap', 'bar-run-cb', 'Running total'],
+              ['bar-tariff-wrap', 'bar-tariff-cb', 'Tariffs'],
               ['bar-eras-wrap', 'bar-eras-cb', 'Eras']]
     .filter(function (o) { var cb = document.getElementById(o[1]); return shown(document.getElementById(o[0])) && cb && cb.checked; })
     .map(function (o) { return o[2] || (document.getElementById('bar-net-text') || {}).textContent || 'Net'; });
@@ -1571,6 +1584,18 @@ function barIncStanding() {
   return cb ? cb.checked : false;
 }
 
+// Running total by the day, the month or the year (24 Nov 2026, the user: as HH has): the net so far from the
+// first bar, on the right-hand axis. Not on HH (its Net box is its running total), in Rate brackets, Flow or
+// Running total, nor in month order, where the bars are not in time order.
+function barRunAvailable() {
+  if (barPeriod === 'hh' || barBrackets() || barFlow() || barRunning()) return false;
+  return !(barMonthOrder === 'month' && (barPeriod === 'monthly' || barSpanMonthFirst()));
+}
+function barShowRun() {
+  var cb = document.getElementById('bar-run-cb');
+  return !!(cb && cb.checked) && barRunAvailable();
+}
+
 // The Net line over the bars (31 Oct 2026; Net was a view of its own, a bar per period).
 function barShowNet() {
   if (barBrackets()) return false;          // the brackets are import's price, not the bill
@@ -1585,6 +1610,7 @@ function barSaveState() {
       period:   barPeriod,
       metric:   barMetric,
       net:      barShowNet(),
+      run:      !!(document.getElementById('bar-run-cb') || {}).checked,
       order:    barMonthOrder,
       spanRes:  barSpanRes,
       lastPeriod: barLastPeriod,
@@ -1654,6 +1680,8 @@ function barLoadState(availableYears) {
     // The Net line; a state saved under the old Net view (st.view === 'net') turns it on
     var nc = document.getElementById('bar-net-cb');
     if (nc) nc.checked = st.net === true || (st.net === undefined && st.view === 'net');
+    var rc = document.getElementById('bar-run-cb');
+    if (rc) rc.checked = st.run === true;
     var tc = document.getElementById('bar-tariff-cb');
     if (tc) tc.checked = st.tariffs === true;
     var ec = document.getElementById('bar-eras-cb');
@@ -1781,6 +1809,30 @@ async function barInit() {
   await _barFetchFresh();
 }
 
+// A rule before each toolbar group that shows, none before a hidden one, none twice in a row (24 Nov 2026)
+function barTbSepSync() {
+  var row = document.querySelector('.bar-toolbar-left');
+  if (!row) return;
+  var seen = false, pending = null;
+  var want = [];
+  Array.prototype.forEach.call(row.children, function(el) {
+    if (el.classList.contains('bar-tb-sep')) { want.push([el, 'none']); if (seen) pending = want[want.length - 1]; return; }
+    if (el.style.display === 'none' || getComputedStyle(el).display === 'none') return;
+    if (pending) { pending[1] = ''; pending = null; }
+    seen = true;
+  });
+  want.forEach(function(w) { if (w[0].style.display !== w[1]) w[0].style.display = w[1]; });
+}
+// The groups are shown and hidden from many places; the rules follow whatever they do
+document.addEventListener('DOMContentLoaded', function() {
+  var row = document.querySelector('.bar-toolbar-left');
+  if (!row || !window.MutationObserver) return;
+  new MutationObserver(function(ms) {
+    if (ms.some(function(m) { return !m.target.classList.contains('bar-tb-sep'); })) barTbSepSync();
+  }).observe(row, {attributes: true, attributeFilter: ['style'], subtree: true});
+  barTbSepSync();
+});
+
 function barSyncUI() {
   // Sync period/metric/view segment buttons to current state vars
   // Period or Span; the resolution's buttons are barOrderResSync's
@@ -1861,7 +1913,17 @@ function barNetRaw(agg) {
 // charge, when shown, sits on the day's first slot and so counts from there). A CO₂ slot with no carbon adds
 // nothing; until one has, the point is empty. Elsewhere each period's own net. The sum is of the
 // unrounded half-hours, rounded as it is drawn: rounding each first drifts over 48.
-function barNetSeries(aggList, isHH) {
+// `run` on a day or longer (24 Nov 2026): the running total of each bar's own net, as the bill rounds it, so its
+// last point is the table's net total to the penny.
+function barNetSeries(aggList, isHH, run) {
+  if (!isHH && run) {
+    var acc = null, dq = barMetric === 'co2' ? 100 : (barMetric === 'cost' ? 100 : 1000);
+    return aggList.map(function(agg) {
+      var v = barNetVal(agg);
+      if (v != null) acc = (acc || 0) + v;
+      return acc == null ? null : Math.round(acc * dq) / dq;
+    });
+  }
   if (!isHH) return aggList.map(barNetVal);
   var run = null, dp = barMetric === 'co2' ? 100 : 1000;
   return aggList.map(function(agg) {
@@ -1896,7 +1958,8 @@ function barAlignZero(datasets, lanes) {
     datasets.forEach(function(ds) {
       var v = ds.data[i];
       if (v == null) return;
-      if (ds._net) { lmax = Math.max(lmax, v); lmin = Math.min(lmin, v); }
+      if (ds.yAxisID === 'yNet') { lmax = Math.max(lmax, v); lmin = Math.min(lmin, v); }
+      else if (ds._net) { pos = Math.max(pos, v); neg = Math.min(neg, v); }   // a Net line on the bars' axis
       else if (v > 0) p += v; else q += v;
     });
     pos = Math.max(pos, p); neg = Math.min(neg, q);
@@ -3254,6 +3317,16 @@ function barGetDatasets(labels, aggList, isHH) {
       order: -1               // drawn over the bars
     });
   }
+  if (!isHH && barShowRun()) {
+    datasets.push({
+      type: 'line', label: 'Running total', _net: true, _run: true,
+      data: barNetSeries(aggList, false, true),
+      yAxisID: 'yNet',
+      borderColor: barNetColor(), backgroundColor: barNetColor(), borderDash: [6, 4],
+      borderWidth: 2, pointRadius: 2, pointHoverRadius: 5, fill: false, tension: 0,
+      stack: 'run', order: -1
+    });
+  }
 
   return datasets;
 }
@@ -3558,6 +3631,8 @@ function barRender() {
   // The Net box names what it draws: on HH a running total of the day's net
   var _nt = document.getElementById('bar-net-text'), _nw = document.getElementById('bar-net-wrap');
   if (_nt) _nt.textContent = barNetLabel();
+  var _rw = document.getElementById('bar-run-wrap');
+  if (_rw) _rw.style.display = barRunAvailable() ? 'flex' : 'none';
   if (_nw) _nw.title = barPeriod === 'hh' ? "Draw the day's net so far (import minus export) as a line over the bars"
                                           : 'Draw import minus export as a line over the bars';
 
@@ -3617,7 +3692,8 @@ function barRender() {
   var _ew = document.getElementById('bar-eras-wrap');
   if (_ew) _ew.style.display = barErasAvailable() ? 'flex' : 'none';
   var showEras = barShowEras() && pd.bucketRanges && pd.bucketRanges.length;
-  var netAxis = !!pd.isHH && barShowNet();   // a boolean: Chart.js shows an axis whose display is undefined
+  // a boolean: Chart.js shows an axis whose display is undefined
+  var netAxis = (!!pd.isHH && barShowNet()) || (!pd.isHH && barShowRun());
   var axes = netAxis ? barAlignZero(datasets, tariffLanes) : null;
   // Month order: shade each bar by its year (older lighter → newer darker) so
   // adjacent same-month bars from different years are distinguishable. No legend
@@ -3919,7 +3995,12 @@ function barBuildLegend() {
     return '<span style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:16px;height:2px;' +
       'background:' + color + ';"></span>' + label + '</span>';
   }
-  var net = barShowNet() ? line(barNetColor(), barNetLabel()) : '';
+  function dashed(color, label) {
+    return '<span style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:16px;height:0;' +
+      'border-top:2px dashed ' + color + ';"></span>' + label + '</span>';
+  }
+  var net = (barShowNet() ? line(barNetColor(), barNetLabel()) : '') +
+            (barShowRun() ? dashed(barNetColor(), 'Running total') : '');      // never on HH: barRunAvailable
   if (barBrackets()) {
     // The brackets with usage in view, cheapest first
     var _ds = (barChartInstance ? barChartInstance.data.datasets : []).filter(function(d) { return d._bracket != null; });
@@ -4502,7 +4583,7 @@ function barAccSyncUI() {
   vis('bar-acc', on, 'grid');
   // its own standing charge box is with the toggles now, outside bar-acc-wrap: hidden with the view
   if (!on) { vis('bar-acc-standing-wrap', false); return; }
-  ['bar-cal-seg', 'bar-order-seg', 'bar-res-seg', 'bar-standing-wrap', 'bar-net-wrap',
+  ['bar-cal-seg', 'bar-order-seg', 'bar-res-seg', 'bar-standing-wrap', 'bar-net-wrap', 'bar-run-wrap',
    'bar-sort-btn', 'bar-br-wrap', 'bar-br-series', 'bar-br-note'].forEach(function(id) { vis(id, false); });
   // PR 4: the eras on every drawing; the tariffs along the Lifetime line
   vis('bar-eras-wrap', !!(barEras && barEras.length), 'flex');
