@@ -95,7 +95,7 @@ about 1440 × 900, dark theme, the page only.
 | Repository | Holds |
 |---|---|
 | `RGx01/EMT` (this one, public) | EMT from 2 Nov 2026, when its history was rewritten clean of real account details |
-| `RGx01/EMT_beta` (public) | The betas from the first release on: this repository's `dev` plus one commit that makes it the separate add-on "EMT (beta)" (*Betas*, below). Issues off. |
+| `RGx01/EMT_beta` (public) | The betas from the first release on: this repository's `dev` plus two commits that make it the separate add-on "EMT (beta)" (*Betas*, below). Its betas are tagged and released there. Issues off. |
 | `RGx01/EMT-archive` (private) | The same work before that: its issues and PRs. A `#NNN` in a history document, or `RGx01/EMT-archive#NNN` in a commit message, is there. |
 | `RGx01/energy-meter-tracker-addon` (public) | v4 from 10 Nov 2026, when it was recreated as one commit: 4.5.25's runtime files, no tests or docs. Critical fixes only. Issues and wiki are off; v4's reports come here. |
 | `RGx01/energy-meter-tracker-addon-archive` (private) | v4 before that: its history, issues, PRs, wiki and tests, and `docs/ROADMAP_archive.md`, which records why v4's decisions were made. A v4 `#NNN` is there. |
@@ -132,19 +132,26 @@ standalone users.
 ### Betas: `RGx01/EMT_beta`
 
 A separate public repository, so a beta reaches only those who add it. Its `main` is this repository's
-`dev` plus **one commit** that makes it its own add-on beside EMT: name "EMT (beta) — Energy Meter
-Tracker", slug `emt_beta`, direct port **8090**, sidebar "EMT beta", its `repository.json`, a README
-banner, and `tests/test_beta_manifest.py` pinning those. Everything else — the code's links to this
-repository's issues and releases included — is EMT's. A different slug is a different add-on (the slug
+`dev` plus **two commits** that make it its own add-on beside EMT: the first gives it its name "EMT (beta) —
+Energy Meter Tracker", slug `emt_beta`, direct port **8090**, sidebar "EMT beta", its `repository.json` and a
+README banner; the second (24 Nov 2026) points the update notice at EMT_beta's releases
+(`web/server.py` `_RELEASES_API`). `tests/test_beta_manifest.py` pins both. Everything else — the code's
+links to this repository's issues included — is EMT's. A different slug is a different add-on (the slug
 rule, above): a tester moves between EMT and EMT (beta) with a backup and a restore.
 
-1. Here: the beta's version and changelog heading on a branch from `dev`, as step 1 above
-   (`2027.1.0b1`), PR to `dev`, merge. Not to `main`.
-2. In a clone of EMT_beta with this repository as a second remote (`emt`): `git fetch emt && git merge
-   emt/dev`, then push its `main`. The one commit stays on top; a conflict is only ever in the lines it
-   changes.
-3. Tag the beta **here**, on `dev`'s merge commit, and make a GitHub **pre-release** on it (never
-   Latest): a stable install asks `/latest`, which leaves pre-releases out; a beta install reads them.
+A beta is versioned, tagged and released **on EMT_beta** (24 Nov 2026), not here: this repository's
+`dev` keeps its `[Unreleased]` changelog section building to the next release, and its `config.yaml` the
+last release's version.
+
+1. In a clone of EMT_beta with this repository as a second remote (`emt`): `git fetch emt && git merge
+   emt/dev`. The two commits stay on top; a conflict is only ever in the lines they change, the version
+   line, and the top of `CHANGELOG.md`: the new `[Unreleased]` entries go under the next beta's heading.
+2. Set the beta's version in EMT_beta's `config.yaml` — `b1`, `b2`, … on the version it leads to — and
+   rename its `[Unreleased]` heading `## [<version>] — <date>` (`tests/test_changelog_shape.py`, and the
+   store shows the top of the changelog); run the suite, commit, push its `main`.
+3. Tag it there (`git tag -s vX -m X`) and make a GitHub **pre-release** on EMT_beta (never Latest), its
+   notes this repository's `[Unreleased]` section. A beta install's update notice reads EMT_beta's
+   releases, pre-releases included; a stable install asks this repository's `/latest`.
 
 Its issues are off: beta reports come here, saying it is a beta.
 
