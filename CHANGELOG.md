@@ -7,6 +7,11 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Usage Stats: Period or Span, then the bars.** The period row was HH, Daily, Monthly, Yearly and Span,
+  with Day, Month and Year under Span only, and Flow renamed the buttons. It is now **Period** or **Span**, and
+  one row for what each bar holds: **HH**, **Day**, **Month** or **Year**. Under Period, HH shows a day, Day a
+  month, Month and Year the years, picked in the row below as before; a span's bars are a day, a month or a
+  year. Your view is remembered as it was.
 - **A slow moment no longer restarts EMT's work.** On an SD card, saving can hold EMT for 20 seconds or
   more; Home Assistant may drop the connection meanwhile, and on reconnecting EMT ran its whole startup
   again, which held it as long a second time. It now reconnects and carries on, and runs its startup
