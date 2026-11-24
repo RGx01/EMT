@@ -105,9 +105,14 @@ class TheSingleSeriesAsBefore(unittest.TestCase):
 
 class TheWiring(unittest.TestCase):
 
-    def test_offered_only_with_export(self):
-        f = _fn("barBrSeriesList")
-        self.assertIn("if (have.export && have.meter) out.push({ id: 'both', label: 'Import & export' });", f)
+    @unittest.skipUnless(shutil.which("node"), "node not available")
+    def test_first_in_the_list_and_only_with_export(self):
+        # 24 Nov 2026, the user: Import & export at the top of the list
+        src = ("var barPeriod = 'daily', barBrHH = null, barBrDays = null, barMeters = [];\n" + _fn("barBrSeriesList") +
+               "\nbarBrDays = {d1: {meter: {}, export: {}}};\nvar a = barBrSeriesList().map(function (o) { return o.id; });"
+               "\nbarBrDays = {d1: {meter: {}}};\nvar b = barBrSeriesList().map(function (o) { return o.id; });"
+               "\nconsole.log(JSON.stringify([a, b]));")
+        self.assertEqual(_node(src), [["both", "meter", "export"], ["meter"]])
 
     def test_tooltip_note_table_and_axis(self):
         self.assertIn("v *= c.dataset._sign || barBrSign();", PAGE)
