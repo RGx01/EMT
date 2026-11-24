@@ -144,10 +144,11 @@ A beta is versioned, tagged and released **on EMT_beta** (24 Nov 2026), not here
 last release's version.
 
 1. In a clone of EMT_beta with this repository as a second remote (`emt`): `git fetch emt && git merge
-   emt/dev`. The two commits stay on top; a conflict is only ever in the lines they change, and the
-   version line.
-2. Set the beta's version in EMT_beta's `config.yaml` — `b1`, `b2`, … on the version it leads to — run the
-   suite, commit, push its `main`.
+   emt/dev`. The two commits stay on top; a conflict is only ever in the lines they change, the version
+   line, and the top of `CHANGELOG.md`: the new `[Unreleased]` entries go under the next beta's heading.
+2. Set the beta's version in EMT_beta's `config.yaml` — `b1`, `b2`, … on the version it leads to — and
+   rename its `[Unreleased]` heading `## [<version>] — <date>` (`tests/test_changelog_shape.py`, and the
+   store shows the top of the changelog); run the suite, commit, push its `main`.
 3. Tag it there (`git tag -s vX -m X`) and make a GitHub **pre-release** on EMT_beta (never Latest), its
    notes this repository's `[Unreleased]` section. A beta install's update notice reads EMT_beta's
    releases, pre-releases included; a stable install asks this repository's `/latest`.
