@@ -50,7 +50,7 @@ class TheToolbar(unittest.TestCase):
     def test_the_choices_are_the_meter_the_house_and_each_device(self):
         f = _fn("barBrSeriesList")
         # named Import, as Running total's is (16 Nov 2026, the user; it read "Whole meter")
-        self.assertIn("var out = [{ id: 'meter', label: 'Import' }];", f)
+        self.assertIn("out.push({ id: 'meter', label: 'Import' });", f)
         self.assertIn("out.push({ id: 'electricity_main', label: (main ? main.label : 'Direct') + ' (house)' });", f)
         self.assertIn("var devs = barMeters.filter(function(m) { return m.is_sub && have[m.id]; });", f)
 

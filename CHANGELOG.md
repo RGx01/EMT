@@ -7,7 +7,7 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
-- **Rate brackets: Import & export.** Where you export, the picker offers both at once: import above the axis
+- **Rate brackets: Import & export.** Where you export, the picker offers both at once, first in its list: import above the axis
   and export below, each in its own colours, with a section each in the table. In Cost the bars are money —
   above the axis what you paid, below what you were paid — so a plunge's credit sits below with the export.
 - **Usage Stats: Period or Span, then the bars.** The period row was HH, Daily, Monthly, Yearly and Span,

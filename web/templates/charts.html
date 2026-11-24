@@ -2615,13 +2615,15 @@ function barBrSideDatasets(aggList, series, sg, side, prefix) {
   });
 }
 
-// The series picker's choices: the whole meter (named Import, as Running total's is: 16 Nov 2026, the
-// user), the house when there are devices, each device.
+// The series picker's choices: Import & export first where there is export (24 Nov 2026, the user), the whole
+// meter (named Import, as Running total's is: 16 Nov 2026, the user), the house when there are devices, each
+// device, Export.
 function barBrSeriesList() {
   var have = {};
   var src = barPeriod === 'hh' ? barBrHH : barBrDays;
   Object.values(src || {}).forEach(function(b) { Object.keys(b).forEach(function(s) { have[s] = true; }); });
-  var out = [{ id: 'meter', label: 'Import' }];
+  var out = have.export && have.meter ? [{ id: 'both', label: 'Import & export' }] : [];
+  out.push({ id: 'meter', label: 'Import' });
   var devs = barMeters.filter(function(m) { return m.is_sub && have[m.id]; });
   if (devs.length) {
     var main = barMeters.find(function(m) { return m.id === 'electricity_main'; });
@@ -2629,7 +2631,6 @@ function barBrSeriesList() {
   }
   devs.forEach(function(m) { out.push({ id: m.id, label: m.label }); });
   if (have.export) out.push({ id: 'export', label: 'Export' });
-  if (have.export && have.meter) out.push({ id: 'both', label: 'Import & export' });
   return out;
 }
 
