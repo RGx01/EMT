@@ -586,13 +586,18 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <button class="bar-seg-btn"        onclick="barSetShow('running',this)">Running total</button>
       </div>
       <span class="bar-tb-sep" aria-hidden="true"></span>
+      <!-- Period or Span, then what each bar holds (24 Nov 2026, the user: one resolution row for both) -->
       <div class="bar-seg" id="bar-period-seg">
-        <button class="bar-seg-btn"        onclick="barSetPeriod('hh',this)" id="bar-hh-btn" title="Half-hourly breakdown of a single day">HH</button>
-        <button class="bar-seg-btn active" onclick="barSetPeriod('daily',this)" id="bar-daily-btn">Daily</button>
-        <button class="bar-seg-btn"        onclick="barSetPeriod('monthly',this)" id="bar-monthly-btn">Monthly</button>
-        <button class="bar-seg-btn"        onclick="barSetPeriod('yearly',this)" id="bar-yearly-btn">Yearly</button>
-        <button class="bar-seg-btn"        onclick="barSetPeriod('span',this)" id="bar-span-btn" style="display:none"
+        <button class="bar-seg-btn active" onclick="barSetKind('period',this)" id="bar-period-btn"
+                title="A day, a month or the years, chosen in the row below">Period</button>
+        <button class="bar-seg-btn"        onclick="barSetKind('span',this)" id="bar-span-btn" style="display:none"
                 title="A stretch you pick: a tariff, a stretch between its price changes, or an era">Span</button>
+      </div>
+      <div class="bar-seg" id="bar-res-seg" title="What each bar holds">
+        <button class="bar-seg-btn"        onclick="barSetRes('hh',this)" data-res="hh" id="bar-hh-btn" title="A day's half-hours">HH</button>
+        <button class="bar-seg-btn active" onclick="barSetRes('day',this)" data-res="day" id="bar-day-btn">Day</button>
+        <button class="bar-seg-btn"        onclick="barSetRes('month',this)" data-res="month" id="bar-month-btn">Month</button>
+        <button class="bar-seg-btn"        onclick="barSetRes('year',this)" data-res="year" id="bar-year-btn">Year</button>
       </div>
       <div class="bar-seg" id="bar-cal-seg">
         <button class="bar-seg-btn active" onclick="barSetCalendar(false,this)">Billing</button>
@@ -602,11 +607,6 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <button class="bar-seg-btn active" onclick="barSetMetric('kwh',this)">kWh</button>
         <button class="bar-seg-btn"        onclick="barSetMetric('cost',this)" id="bar-cost-btn">Cost</button>
         <button class="bar-seg-btn"        onclick="barSetMetric('co2',this)"  id="bar-co2-btn"  style="display:none">CO₂</button>
-      </div>
-      <div class="bar-seg" id="bar-spanres-seg" style="display:none;" title="A span's bars: a day, a month or a year each">
-        <button class="bar-seg-btn" onclick="barSetSpanRes('day',this)">Day</button>
-        <button class="bar-seg-btn" onclick="barSetSpanRes('month',this)">Month</button>
-        <button class="bar-seg-btn" onclick="barSetSpanRes('year',this)">Year</button>
       </div>
       <div class="bar-seg" id="bar-order-seg" style="display:none;" title="Order the bars by calendar date, or grouped by month across years">
         <button class="bar-seg-btn active" onclick="barSetOrder('date',this)">Date</button>
@@ -1197,7 +1197,7 @@ function barPdfSettings() {
   var acc = document.getElementById('bar-acc-series');
   if (shown(acc) && acc.selectedIndex >= 0) add('Series', acc.options[acc.selectedIndex].text);
   add('Winding', seg('bar-acc-mode'));
-  add('Bars', seg('bar-spanres-seg'));
+  add('Bars', seg('bar-res-seg'));
   add('Order', seg('bar-order-seg'));
   var lbl = document.querySelector('#bar-sub-bar .bar-period-label');
   add(lbl ? 'Range' : 'Years', lbl ? lbl.textContent.trim()
@@ -1535,6 +1535,8 @@ var barMetric = 'kwh';
 var barMonthOrder = 'date';  // monthly bar ordering: 'date' (chronological) or 'month' (month-first, then year)
 // Span's bars: a day, a month or a year each (22 Nov 2026, the user); null, as the span's length chooses
 var barSpanRes = null;
+// The period Period returns to from Span (24 Nov 2026): the last of HH, Daily, Monthly or Yearly
+var barLastPeriod = 'daily';
 var barCalendar = false;   // false = billing periods, true = calendar periods
 var barBillingDay = 1;
 var barDailyMonth = null;  // now a bKey string e.g. "2026-04-15"
@@ -1585,6 +1587,7 @@ function barSaveState() {
       net:      barShowNet(),
       order:    barMonthOrder,
       spanRes:  barSpanRes,
+      lastPeriod: barLastPeriod,
       calendar: barCalendar,
       hhDate:   barHHDate,
       bKey:     typeof barDailyMonth === 'string' ? barDailyMonth : (barDailyMonth ? (barDailyMonth.year + '-' + String(barDailyMonth.month).padStart(2,'0') + '-01') : null),
@@ -1622,6 +1625,8 @@ function barLoadState(availableYears) {
     var st = JSON.parse(raw);
     if (['daily','monthly','yearly','hh','span'].indexOf(st.period) !== -1) barPeriod = st.period;
     if (st.period === 'era') barPeriod = 'span';                     // its name before 4 Nov 2026's rework
+    if (['daily','monthly','yearly','hh'].indexOf(st.lastPeriod) !== -1) barLastPeriod = st.lastPeriod;
+    if (barPeriod !== 'span') barLastPeriod = barPeriod;
     if (typeof st.span === 'string') barSpanId = st.span;
     else if (typeof st.flowEra === 'string') barSpanId = st.flowEra;
     if (['kwh','cost','co2'].indexOf(st.metric) !== -1)       barMetric = st.metric;
@@ -1778,9 +1783,10 @@ async function barInit() {
 
 function barSyncUI() {
   // Sync period/metric/view segment buttons to current state vars
-  // by the period each button sets, not its words: Flow names them by the span they total
+  // Period or Span; the resolution's buttons are barOrderResSync's
   document.querySelectorAll('#bar-period-seg .bar-seg-btn').forEach(function(b){
-    b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf("'" + barPeriod + "'") !== -1);
+    var span = b.id === 'bar-span-btn';
+    b.classList.toggle('active', span === (barPeriod === 'span'));
   });
   // Billing/Calendar toggle is meaningless for the HH (single-day) view — hide it.
   var calSeg = document.getElementById('bar-cal-seg');
@@ -3154,7 +3160,6 @@ function barSetBrPct(on) { barBrPct = !!on; barSaveState(); barRender(); }
 // What the view shows and hides: the series picker and % in Rate brackets; the Net line, the
 // standing charge, CO₂ and the period sort only with the devices.
 // [period, its name in the bar views, its name in Flow]
-var FLOW_PERIOD_NAMES = [['hh', 'HH', 'Daily'], ['daily', 'Daily', 'Monthly'], ['monthly', 'Monthly', 'Yearly']];
 function barBrSyncUI() {
   var on = barBrackets(), fl = barFlow();
   function vis(id, show, how) { var e = document.getElementById(id); if (e) e.style.display = show ? (how || '') : 'none'; }
@@ -3165,15 +3170,6 @@ function barBrSyncUI() {
   vis('bar-sort-btn', !on && !fl);
   vis('bar-flow-head', fl, 'flex');
   var spanOk = barSpans().length > 0;
-  // Flow totals the span the bars would show, so its buttons are named by that span (4 Nov 2026, the
-  // user): HH is a day, Daily a month, Monthly the years ticked
-  FLOW_PERIOD_NAMES.forEach(function(p) {
-    var b = document.getElementById('bar-' + p[0] + '-btn');
-    if (!b) return;
-    b.textContent = fl ? p[2] : p[1];
-    if (p[0] === 'hh') b.title = fl ? "A day's flow" : 'Half-hourly breakdown of a single day';
-  });
-  vis('bar-yearly-btn', !fl);
   vis('bar-span-btn', spanOk);
   // not before the eras and tariffs are known: a remembered Span is drawn when they land
   if (barPeriod === 'span' && !spanOk && !barSpansPending()) barPeriod = 'monthly';
@@ -4506,7 +4502,7 @@ function barAccSyncUI() {
   vis('bar-acc', on, 'grid');
   // its own standing charge box is with the toggles now, outside bar-acc-wrap: hidden with the view
   if (!on) { vis('bar-acc-standing-wrap', false); return; }
-  ['bar-cal-seg', 'bar-order-seg', 'bar-spanres-seg', 'bar-standing-wrap', 'bar-net-wrap',
+  ['bar-cal-seg', 'bar-order-seg', 'bar-res-seg', 'bar-standing-wrap', 'bar-net-wrap',
    'bar-sort-btn', 'bar-br-wrap', 'bar-br-series', 'bar-br-note'].forEach(function(id) { vis(id, false); });
   // PR 4: the eras on every drawing; the tariffs along the Lifetime line
   vis('bar-eras-wrap', !!(barEras && barEras.length), 'flex');
@@ -5462,26 +5458,68 @@ new MutationObserver(function(muts) {
 }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'], attributeOldValue: true });
 
 function barSetActive(segId, el) { document.querySelectorAll('#'+segId+' .bar-seg-btn').forEach(b=>b.classList.remove('active')); el.classList.add('active'); }
-function barSetPeriod(v, el) { barPeriod = v; barSetActive('bar-period-seg', el); barSaveState(); barRender(); }
+// Period or Span, then the resolution: what each bar holds (24 Nov 2026, the user). Under Period the
+// resolution picks the period the bars show — HH a day's half-hours, Day a month's days, Month the
+// years' months, Year the years; Flow draws one bar, so there Day is a day's flow, Month a month's,
+// Year the years ticked, and HH is not offered. Under Span it is the span's bars; no HH on a span.
+// Pure.
+var BAR_RES_PERIOD = {hh: 'hh', day: 'daily', month: 'monthly', year: 'yearly'};
+var BAR_RES_PERIOD_FLOW = {day: 'hh', month: 'daily', year: 'monthly'};
+function barResOfPeriod(period, flow) {
+  var m = flow ? BAR_RES_PERIOD_FLOW : BAR_RES_PERIOD;
+  for (var r in m) if (m[r] === period) return r;
+  return null;
+}
+function barPeriodOfRes(res, flow) {
+  return (flow ? BAR_RES_PERIOD_FLOW : BAR_RES_PERIOD)[res] || null;
+}
+function barResOffered(period, flow) {
+  if (period === 'span') return flow ? [] : ['day', 'month', 'year'];
+  return flow ? ['day', 'month', 'year'] : ['hh', 'day', 'month', 'year'];
+}
+function barSetKind(v, el) {
+  if (v === 'span') { if (barPeriod !== 'span') barLastPeriod = barPeriod; barPeriod = 'span'; }
+  else {
+    barPeriod = barLastPeriod;
+    if (barFlow() && barPeriod === 'yearly') barPeriod = 'monthly';
+  }
+  barSaveState(); barSyncUI(); barRender();
+}
+function barSetRes(v, el) {
+  if (barPeriod === 'span') {
+    if (v === 'hh') return;
+    barSpanRes = v;
+  } else {
+    var p = barPeriodOfRes(v, barFlow());
+    if (!p) return;
+    barPeriod = barLastPeriod = p;
+  }
+  barSaveState(); barSyncUI(); barRender();
+}
 function barSetMetric(v, el) { barMetric = v; barSetActive('bar-metric-seg', el); barSaveState(); barRender(); }
 function barSetOrder(v, el)  { barMonthOrder = v; barSetActive('bar-order-seg', el); barSaveState(); barRender(); }
-// Whether the Date/Month order and Span's Day/Month/Year show: the order on Monthly, and on a span by the day or the
-// month (not by the year, nor Flow's one bar); the resolution on a span (not Flow's). Neither on Running total. Pure.
+// Whether the Date/Month order and the resolution show: the order on Monthly, and on a span by the day or the
+// month (not by the year, nor Flow's one bar); the resolution everywhere but Flow's one bar on a span. Neither
+// on Running total. Pure.
 function barOrderResShown(period, show, res) {
   var spanBars = period === 'span' && show !== 'flow' && show !== 'running';
-  return {order: (period === 'monthly' && show !== 'running') || (spanBars && res !== 'year'), res: spanBars};
+  return {order: (period === 'monthly' && show !== 'running') || (spanBars && res !== 'year'),
+          res: show !== 'running' && !(period === 'span' && show === 'flow')};
 }
 function barOrderResSync() {
-  var res = barPeriod === 'span' ? barSpanResolution(barSpanCurrent()) : null;
+  var fl = barFlow();
+  var res = barPeriod === 'span' ? barSpanResolution(barSpanCurrent()) : barResOfPeriod(barPeriod, fl);
   var v = barOrderResShown(barPeriod, barShow, res);
-  var o = document.getElementById('bar-order-seg'), r = document.getElementById('bar-spanres-seg');
+  var o = document.getElementById('bar-order-seg'), r = document.getElementById('bar-res-seg');
   if (o) o.style.display = v.order ? 'inline-flex' : 'none';
   if (r) r.style.display = v.res ? 'inline-flex' : 'none';
-  document.querySelectorAll('#bar-spanres-seg .bar-seg-btn').forEach(function(b) {
-    b.classList.toggle('active', !!res && (b.getAttribute('onclick') || '').indexOf("'" + res + "'") !== -1);
+  var offered = barResOffered(barPeriod, fl);
+  document.querySelectorAll('#bar-res-seg .bar-seg-btn').forEach(function(b) {
+    var br = b.getAttribute('data-res');
+    b.style.display = offered.indexOf(br) !== -1 ? '' : 'none';
+    b.classList.toggle('active', !!res && br === res);
   });
 }
-function barSetSpanRes(v, el) { barSpanRes = v; barSetActive('bar-spanres-seg', el); barSaveState(); barSyncUI(); barRender(); }
 function barSetCalendar(v, el) { barCalendar = v; barSetActive('bar-cal-seg', el); barSaveState(); barRender(); }
 
 if (!window.Chart) {

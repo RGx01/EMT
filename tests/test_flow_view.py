@@ -469,9 +469,10 @@ class ThePureControls(unittest.TestCase):
                  ("span", "flow", "month"), ("span", "running", "day"), ("monthly", "running", None),
                  ("daily", "devices", None)]
         got = self._js("[%s]" % ",".join("barOrderResShown(%s,%s,%s)" % tuple(json.dumps(x) for x in c) for c in cases))
+        # 24 Nov 2026: the resolution row is on every period, not only a span; not Flow's span, not Running total
         self.assertEqual([(g["order"], g["res"]) for g in got],
-                         [(True, False), (True, True), (False, True), (False, False), (False, False),
-                          (False, False), (False, False)])
+                         [(True, True), (True, True), (False, True), (False, False), (False, False),
+                          (False, False), (False, True)])
 
     def test_bold_where_the_calendar_month_changes(self):
         # by the day in month order: Jan '24's days, Jan '25's, then Feb '24's — a thin line, then a bold one
@@ -535,11 +536,10 @@ class TheWiring(unittest.TestCase):
         self.assertIn("'<span>Export is net of ' + barFlowFmt(-t.paid, 1) + ' paid to export at negative prices</span>'", h)
 
     def test_span_in_the_bar_views_yearly_but_in_flow(self):
-        self.assertIn("onclick=\"barSetPeriod('span',this)\" id=\"bar-span-btn\"", PAGE)
+        self.assertIn("onclick=\"barSetKind('span',this)\" id=\"bar-span-btn\"", PAGE)
         f = _fn("barSetShow")
         self.assertIn("if (v === 'flow' && barPeriod === 'yearly') barPeriod = barSpansPending() || barSpans().length ? 'span' : 'monthly';", f)
         ui = _fn("barBrSyncUI")
-        self.assertIn("vis('bar-yearly-btn', !fl);", ui)
         self.assertIn("vis('bar-span-btn', spanOk);", ui)
         load = _fn("barLoadState")
         self.assertIn("if (st.period === 'era') barPeriod = 'span';", load)
@@ -588,7 +588,8 @@ class TheWiring(unittest.TestCase):
         self.assertIn("groups: monthFirst ? buckets.map(function(b){ return b.m; }) : null", PAGE)
 
     def test_span_has_its_resolution_and_the_order(self):
-        self.assertIn('<div class="bar-seg" id="bar-spanres-seg"', PAGE)
+        self.assertIn('<div class="bar-seg" id="bar-res-seg"', PAGE)
+        self.assertNotIn('bar-spanres-seg', PAGE)
         self.assertIn("if (['day','month','year'].indexOf(st.spanRes) !== -1)     barSpanRes = st.spanRes;", PAGE)
 
     def test_one_place_decides_both_controls(self):
@@ -598,23 +599,17 @@ class TheWiring(unittest.TestCase):
         r = _fn("barRender")
         self.assertIn("barOrderResSync();", r)
         self.assertNotIn("_orderSeg.style.display = (barPeriod === 'monthly')", r)
-        self.assertIn("['bar-cal-seg', 'bar-order-seg', 'bar-spanres-seg',", PAGE)   # Running total hides both
+        self.assertIn("['bar-cal-seg', 'bar-order-seg', 'bar-res-seg',", PAGE)   # Running total hides both
 
-    def test_flow_names_its_periods_by_what_it_totals(self):
-        # 4 Nov 2026, the user: in Flow HH is a day, Daily a month, Monthly the years ticked
-        self.assertIn("var FLOW_PERIOD_NAMES = [['hh', 'HH', 'Daily'], ['daily', 'Daily', 'Monthly'], "
-                      "['monthly', 'Monthly', 'Yearly']];", PAGE)
-        f = _fn("barBrSyncUI")
-        self.assertIn("var b = document.getElementById('bar-' + p[0] + '-btn');", f)
-        self.assertIn("b.textContent = fl ? p[2] : p[1];", f)
-        for p in ("hh", "daily", "monthly"):
-            self.assertIn("onclick=\"barSetPeriod('%s',this)\" id=\"bar-%s-btn\"" % (p, p), PAGE)
+    def test_flow_renames_no_buttons(self):
+        # 24 Nov 2026: the resolution row names what each bar holds, so Flow's one bar needs no renamed buttons
+        self.assertNotIn("FLOW_PERIOD_NAMES", PAGE)
+        self.assertNotIn("b.textContent = fl ?", _fn("barBrSyncUI"))
 
-    def test_the_active_period_by_what_it_sets_not_its_words(self):
-        # renamed in Flow, a button's words no longer name its period
+    def test_the_active_period_by_period_or_span(self):
         f = _fn("barSyncUI")
-        self.assertIn("b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf(\"'\" + barPeriod + \"'\") !== -1);", f)
-        self.assertNotIn("b.textContent.toLowerCase() === v", f)
+        self.assertIn("var span = b.id === 'bar-span-btn';", f)
+        self.assertIn("b.classList.toggle('active', span === (barPeriod === 'span'));", f)
 
     def test_export_says_where_emt_cannot_see(self):
         f = _fn("barFlowDraw")
