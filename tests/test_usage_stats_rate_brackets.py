@@ -87,10 +87,11 @@ class TheChart(unittest.TestCase):
 
     def test_the_bars_are_the_brackets(self):
         self.assertIn("if (barBrackets()) return barBrDatasets(aggList);", _fn("barGetDatasets"))
-        ds = _fn("barBrDatasets")
-        self.assertIn("var ns = barBrNs(aggList), sg = barBrSign();", ds)
+        self.assertIn("return barBrSideDatasets(aggList, barBrSeries, barBrSign(), null, '');", _fn("barBrDatasets"))
+        ds = _fn("barBrSideDatasets")
+        self.assertIn("var ns = barBrNs(aggList, series);", ds)
         self.assertIn("if (barBrPct) return kwh[i] > 0 ? sg * Math.round(v[0] / kwh[i] * 10000) / 100 : 0;", ds)
-        self.assertIn("backgroundColor: barBrColor(n, ns)", ds)
+        self.assertIn("backgroundColor: barBrColor(n, ns, side || undefined, !!side)", ds)
 
     def test_kwh_or_cost_follows_the_metric(self):
         self.assertIn("function barBrVal(v) { return barMetric === 'cost' ? v[1] : v[0]; }", PAGE)
@@ -107,10 +108,10 @@ class TheChart(unittest.TestCase):
 
     def test_share_is_of_the_kwh_out_of_a_hundred(self):
         # of kWh in Cost too: a plunge's credit takes from a bar's £, and a share of it passed 100%
-        ds = _fn("barBrDatasets")
+        ds = _fn("barBrSideDatasets")
         self.assertIn("return Object.keys(b).reduce(function(s, n) { return s + b[n][0]; }, 0);", ds)
-        self.assertIn("barBrackets() && barBrPct ? (barBrSign() < 0 ? { min: -100, max: 0, grace: 0 } "
-                      ": { min: 0, max: 100, grace: 0 }) : {}", _fn("barRender"))
+        self.assertIn(": barBrSign() < 0 ? { min: -100, max: 0, grace: 0 } : { min: 0, max: 100, grace: 0 }) : {}",
+                      _fn("barRender"))
 
 
 class TheExport(unittest.TestCase):
@@ -120,8 +121,8 @@ class TheExport(unittest.TestCase):
 
     def test_below_the_axis_its_figures_positive(self):
         self.assertIn("function barBrSign() { return barBrSeries === 'export' ? -1 : 1; }", PAGE)
-        self.assertIn("return sg * Math.round(barBrVal(v) * 1000) / 1000;", _fn("barBrDatasets"))
-        self.assertIn("v *= barBrSign();", _fn("barRender"))
+        self.assertIn("return sg * Math.round(barBrVal(v) * 1000) / 1000;", _fn("barBrSideDatasets"))
+        self.assertIn("v *= c.dataset._sign || barBrSign();", _fn("barRender"))
 
     def test_earnings_run_blue_to_purple(self):
         # money in, as an import plunge's blue; the green-to-red ramp is money out
@@ -130,11 +131,11 @@ class TheExport(unittest.TestCase):
         self.assertNotIn("t = 1 - t", c)
 
     def test_paying_to_export_is_red(self):
-        self.assertIn("if (n < 0) return ex ? 'hsl(0, '", _fn("barBrColor"))
+        self.assertIn(": 'hsl(0, ' + (dark ? 62 : 68) + '%, '", _fn("barBrColor"))
 
     def test_its_table_and_line_speak_of_credit(self):
         t = _fn("barBrBuildTable")
-        self.assertIn("(ex ? 'Credit' : 'Cost')", t)
+        self.assertIn("ex ? 'Credit' : 'Cost')", t)
         self.assertIn("ex ? 'Export earned ' + mine.toFixed(1) + 'p/kWh on average'", _fn("barBrNote"))
 
 
@@ -143,9 +144,9 @@ class TheTable(unittest.TestCase):
     def test_down_the_brackets(self):
         self.assertIn("if (barBrackets()) { barBrBuildTable(tbl, aggList); return; }", _fn("barBuildTable"))
         t = _fn("barBrBuildTable")
-        self.assertIn("<th>Rate bracket</th><th>kWh</th><th>' + (ex ? 'Credit' : 'Cost')", t)
+        self.assertIn("<th>Rate bracket</th><th>kWh</th><th>' + (both ? 'Cost / credit' : ex ? 'Credit' : 'Cost')", t)
         self.assertIn("</th><th>Avg p/kWh</th><th>Share of kWh</th></tr>", t)
-        self.assertIn("var ns = barBrNs(aggList);", t)          # the chart's brackets: the colours agree
+        self.assertIn("var ns = barBrNs(aggList, series);", _fn("barBrTableRows"))   # the chart's: the colours agree
 
     def test_the_average_is_cost_over_kwh(self):
         self.assertIn("return k > 0 ? c / k * 100 : null;", _fn("barBrAvg"))
