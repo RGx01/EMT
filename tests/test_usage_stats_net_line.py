@@ -115,7 +115,7 @@ class TheNetLine(unittest.TestCase):
         self.assertIn("if (ds._net) return;", _fn("barApplyYearGradient"))
 
     def test_the_legend_names_it(self):
-        self.assertIn("var net = barShowNet() ? line(barNetColor(), barNetLabel()) : '';", _fn("barBuildLegend"))
+        self.assertIn("var net = (barShowNet() ? line(barNetColor(), barNetLabel()) : '') +", _fn("barBuildLegend"))
 
 
 class TheHalfHourView(unittest.TestCase):
@@ -131,7 +131,7 @@ class TheHalfHourView(unittest.TestCase):
     def test_it_has_its_own_axis_with_the_zeros_level(self):
         self.assertIn("yAxisID: isHH ? 'yNet' : 'y',", _fn("barGetDatasets"))
         render = _fn("barRender")
-        self.assertIn("var netAxis = !!pd.isHH && barShowNet();", render)
+        self.assertIn("var netAxis = (!!pd.isHH && barShowNet()) || (!pd.isHH && barShowRun());", render)
         self.assertIn("var axes = netAxis ? barAlignZero(datasets, tariffLanes) : null;", render)
         self.assertIn("yNet: Object.assign({ display: netAxis, position: 'right'", render)
         align = _fn("barAlignZero")
