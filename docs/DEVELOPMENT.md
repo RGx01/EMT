@@ -144,8 +144,10 @@ A beta is versioned, tagged and released **on EMT_beta** (24 Nov 2026), not here
 last release's version.
 
 1. In a clone of EMT_beta with this repository as a second remote (`emt`): `git fetch emt && git merge
-   emt/dev`. The two commits stay on top; a conflict is only ever in the lines they change, the version
-   line, and the top of `CHANGELOG.md`: the new `[Unreleased]` entries go under the next beta's heading.
+   emt/dev`. The two commits stay on top; a conflict is only ever in the lines they change. **Then read
+   the top of `CHANGELOG.md`:** git merges this repository's new `[Unreleased]` entries in **without a
+   conflict, under the last beta's heading** (b35's entry landed under b34's, 25 Nov 2026), so move
+   them under the new beta's heading in step 2.
 2. Set the beta's version in EMT_beta's `config.yaml` — `b1`, `b2`, … on the version it leads to — and
    rename its `[Unreleased]` heading `## [<version>] — <date>` (`tests/test_changelog_shape.py`, and the
    store shows the top of the changelog); run the suite, commit, push its `main`.
