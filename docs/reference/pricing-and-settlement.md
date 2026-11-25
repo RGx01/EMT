@@ -92,7 +92,10 @@ The bill wins over the prediction; where they disagree the detail panel notes it
   breakdown, where the cached bill is cost-only and a completed dispatch drew — or the half-hour is an
   API import's, which has no dispatch to say), an imported half-hour's own (asked after everything else).
 - Newest first, a page at a time (3 local days of costs, or 48 breakdown half-hours); it stops when
-  under 25% of the API allowance is left. Runs from the 5-minute dispatch tick and after an import.
+  under 25% of the API allowance is left. Runs with the hourly reconcile (on the 5-minute dispatch tick,
+  at most once an hour), after an import, and at the end of every poll cycle — the 6-hourly one and the
+  pill's *Retry settlement* — which waits for it (`_drain_after_poll`), so the bills for the kWh it has
+  just settled are asked at once.
 - **Costs are asked** a local day at a time, then the local month for what the day leaves, then noon
   to noon for what the month leaves (`recover_measurement_costs`). Octopus answers some windows
   that start at a day's midnight with no costs at all, and the same half-hours in a window that

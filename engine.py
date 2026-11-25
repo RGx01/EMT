@@ -13004,10 +13004,21 @@ def _measured_history_backlog() -> int:
         return 0
 
 
-def _maybe_drain_measured_history() -> None:
+async def _drain_after_poll() -> None:
+    """Ask Octopus for the bills a poll cycle's settled kWh now allow, and wait for the answer. Non-fatal."""
+    try:
+        t = _maybe_drain_measured_history()
+        if t is not None:
+            await t
+    except Exception as e:
+        logger.warning("kraken_poll_task: asking for the bills failed (non-fatal): %s", e)
+
+
+def _maybe_drain_measured_history():
     """Schedule the SMB history drain as a loop TASK when a first-time / bulk import has left a
     backlog of capped slots without Octopus's billed breakdown. Guarded by an in-process flag; a
-    no-op with no backlog, no API, or a running import/delete. Re-arms whenever a new backlog appears."""
+    no-op with no backlog, no API, or a running import/delete. Re-arms whenever a new backlog appears.
+    Returns the task, or None where none was scheduled: the poll cycle waits on it (25 Nov 2026)."""
     global _measured_history_drain_running
     try:
         if _store is None or _measured_history_drain_running or not _any_intelligent():
@@ -13043,7 +13054,7 @@ def _maybe_drain_measured_history() -> None:
         _measured_history_drain_running = True
         logger.info("octopus asks: scheduling — %d half-hour(s) to ask Octopus about",
                     _measured_history_backlog())
-        loop.create_task(_task())
+        return loop.create_task(_task())
     except Exception as e:
         logger.warning("_maybe_drain_measured_history: schedule failed: %s", e)
         _measured_history_drain_running = False
@@ -13536,6 +13547,10 @@ async def kraken_poll_task(ha: HAClient):
             # (late/out-of-order DCC settlement). Runs on the first poll after
             # startup too, so downtime gaps catch up. Self-gated + non-fatal.
             await _maybe_run_settlement_sweep()
+            # The bills for the kWh just settled (25 Nov 2026, the user: the pill's Retry settlement
+            # settled a day's kWh and left its cost for the hourly asker, so the day came back an
+            # estimate). Backlog-gated and paced as ever; the cycle — and the pill — waits for it.
+            await _drain_after_poll()
         except Exception as e:
             logger.error("kraken_poll_task: poll failed: %s", e)
         finally:
