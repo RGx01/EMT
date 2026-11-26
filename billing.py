@@ -455,26 +455,33 @@ def _records_from_rows(rows, segments):
         yield rec[0], rec[1], rec[2]
 
 
-def calculate_billing_summary_for_period(blocks, period_start, period_end, store=None, *, tz_name):
+def calculate_billing_summary_for_period(blocks, period_start, period_end, store=None, *, tz_name,
+                                         statement_export=None):
     return _summarise(_records_from_blocks(blocks), period_start, period_end, store,
-                      tz_name=tz_name)
+                      tz_name=tz_name, statement_export=statement_export)
 
 
-def summarise_bill_rows(rows, segments, period_start, period_end, store=None, *, tz_name):
+def summarise_bill_rows(rows, segments, period_start, period_end, store=None, *, tz_name,
+                        statement_export=None):
     """calculate_billing_summary_for_period over BlockStore.get_bill_rows (#48): the
     same summary, from flat rows instead of block dicts."""
     return _summarise(_records_from_rows(rows, segments), period_start, period_end, store,
-                      tz_name=tz_name)
+                      tz_name=tz_name, statement_export=statement_export)
 
 
-def _summarise(records, period_start, period_end, store=None, *, tz_name):
+def _summarise(records, period_start, period_end, store=None, *, tz_name, statement_export=None):
     """The period's bill summary over records `(start_utc, timezone, meters)`, in start
     order. A meter is `(name, is_sub, site, device, standing_charge, channels)`; a
     channel is the tuple _channel_from_dict documents by building it, or None (skipped).
 
     One loop for both sources (#48, 3 Oct 2026). It was a loop over block dicts that
     re-read every field through `.get` chains, 2M calls on a year's bill. The
-    arithmetic and its order are unchanged, so the summary is the same to the bit."""
+    arithmetic and its order are unchanged, so the summary is the same to the bit.
+
+    `statement_export`, a predicate on a half-hour's UTC start (energy_charts.billing_context: the
+    agreements on Agile Outgoing), takes the main meter's export there as the statement prices it:
+    its kWh to 0.01, half to even, at the half-hour's rate (statement_kwh, 26 Nov 2026). The export's
+    raw totals (`main_export_raw`) stay the meter's."""
     meter_summary  = defaultdict(lambda: defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "read_start": None, "read_end": None}))
     meter_totals   = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "read_start": None, "read_end": None})
     main_import_raw = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0})
@@ -572,6 +579,11 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
                     if is_main_import:
                         main_export_raw["kwh"]  += raw_kwh
                         main_export_raw["cost"] += cost
+                        if statement_export is not None and kwh and statement_export(start):
+                            import statement_kwh as _sk
+                            _k2 = _sk.statement_kwh(kwh)
+                            cost = cost * _k2 / kwh      # the stored £ are the rate × the raw kWh
+                            kwh = _k2
                     cost = -abs(cost)
                 elif is_main_import:
                     # Store raw total before sub-meter subtraction

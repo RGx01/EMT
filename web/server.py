@@ -7368,11 +7368,22 @@ def api_periods():
                 by_day.setdefault(r["day"], []).append(r)
             days = sorted(by_day)
             import bisect as _bisect
+            # On Agile the Billing tab's cards take each half-hour at the statement's kWh
+            # (statement_kwh, 26 Nov 2026): the picker's per-day totals take the same, so a period's
+            # label reads within pennies of its card. Today and This Year (kind=live) are what was
+            # used, as Usage Stats; This Bill is the card's own total, below.
+            import agile_bill as _ab
+            _adj = (_ab.statement_day_adjustments(store, tz_name, span[0], span[1])
+                    if kind != "live" else {})
             for p in out:
                 lo = _bisect.bisect_left(days, p["start"])
                 hi = _bisect.bisect_left(days, p["end"])
                 rs = [r for d in days[lo:hi] for r in by_day[d]]
                 p["net_cost"] = _billing.bill_net_from_day_rollups(rs)
+                if _adj:
+                    _a = sum(v for d, v in _adj.items() if p["start"] <= d < p["end"])
+                    if _a:
+                        p["net_cost"] = round(p["net_cost"] + _a, 2)
                 p["net_cost_text"] = "%s%.2f" % (currency, p["net_cost"])   # as the picker prints it
                 p["has_data"] = bool(rs)
             if kind == "live":
@@ -7389,6 +7400,9 @@ def api_periods():
                         if _summ:
                             p["net_cost"] = _bc_t.bill_total(_summ)
                             p["net_cost_text"] = "%s%.2f" % (currency, p["net_cost"])
+                        # the card's ? : its total takes Agile's rounding, its rows the meter's
+                        p["statement_rounded"] = bool(_ab.statement_day_adjustments(
+                            store, tz_name, p["start_utc"], p["end_utc"]))
         if "rows" in include and out:
             # Live Power's card rows per window, folded from ONE per-day pass
             # (get_day_live_rollups) — the rows /api/billing built with six queries per

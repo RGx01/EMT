@@ -78,7 +78,7 @@ class TheDependencyRunsOneWay(unittest.TestCase):
 
 
 # Project modules billing.py may import: pure rules that import nothing of the project's.
-PURE_RULES = {"direct_import"}
+PURE_RULES = {"direct_import", "statement_kwh"}
 
 
 class BillingIsALeaf(unittest.TestCase):

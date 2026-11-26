@@ -67,6 +67,42 @@
   </ul>
 </div>
 
+<div class="card help-section" id="kept-and-billed">
+  <div class="card-title">🧾 What EMT keeps, and what the bill shows</div>
+  <p>
+    EMT keeps each half-hour as it happened: the <strong>kWh the meter measured</strong>, to the
+    thousandth of a kWh Octopus reads it to, and <strong>its cost</strong> — Octopus's own once it
+    arrives, else the kWh × the rate. Usage Stats, the day charts, the heatmaps, devices, carbon and
+    exports all show these figures. They are what you used.
+  </p>
+  <p>
+    The <strong>bill card</strong> on Billing (and the totals in its period list), and the Overview's
+    <strong>This Bill</strong> total, are built the way your statement is, so they can be set beside it
+    line by line. The Overview's <strong>Today</strong> and <strong>This Year</strong> are what you used,
+    as Usage Stats shows it.
+  </p>
+  <ul>
+    <li><strong>Rounded once, as a bill is.</strong> The half-hours are added up ex VAT, each line of the
+      bill is rounded to the penny, and VAT goes on top. Usage Stats rounds each day to the penny instead,
+      so over a period the two can be a few pence apart.</li>
+    <li><strong>Agile, import and Agile Outgoing export.</strong> Octopus's Agile statement prices each
+      half-hour at its rate × its kWh <em>rounded to 0.01 kWh</em> (half to even: 0.005 → 0.00,
+      0.015 → 0.02). A half-hour of a few watt-hours — a home running from its battery has hundreds a
+      month — is charged nothing. The bill card does the same, so on Agile it can be a kWh or two and
+      tens of pence a month below Usage Stats, and it matches the statement.</li>
+    <li><strong>Intelligent Octopus Go</strong> statements print rounded kWh too, but charge Octopus's own
+      cost for each half-hour, which is the cost EMT keeps: nothing is rounded there.</li>
+  </ul>
+  <div class="note-box">
+    To check EMT against your statement, use the bill card. To see what you used, and what each device
+    and each half-hour cost, use Usage Stats. On Agile they differ by design: the statement's rounding
+    is how Octopus charges, not how much energy you used. The card's <em>Breakdown by meter</em> is the
+    meter's own split, as Usage Stats shows it, so on Agile it can add up to a little more than the
+    import line above it. The same goes for This Bill's lines on the Overview, and on Agile its total
+    has a <strong>?</strong> that says so.
+  </div>
+</div>
+
 <div class="card help-section">
   <div class="card-title">🚗 Intelligent Octopus Go</div>
   <p>

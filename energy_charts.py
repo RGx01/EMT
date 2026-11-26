@@ -207,7 +207,8 @@ def _collapse_rate_kwh(rate_kwh):
 
 
 
-def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, vat_at=None):
+def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, vat_at=None,
+                           statement_import=None):
     """BL-24: ex-VAT bill-method breakdown for a period — import energy by rate band, plus
     ex-VAT standing, a VAT row and the inc total. Matches how Octopus actually reconciles
     (verified against a real bill): the per-half-hour figures are summed RAW and rounding
@@ -222,7 +223,13 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
     real pair, else `period_vat` — which is what the pre-render did for every period, so a bill
     period spanning 1 Oct 2026's change to 0% took 1 Oct's standing charge ÷ 1.05,
     labelled the VAT "@ 5%", and showed 1 Oct's ex-VAT rows twice. Rows are grouped by
-    their ex-VAT rate (the table's own basis); the VAT line names each rate in force."""
+    their ex-VAT rate (the table's own basis); the VAT line names each rate in force.
+
+    An Agile half-hour is the exception to "summed raw" (26 Nov 2026): its statement prices it at
+    the rate × its kWh to 0.01, half to even (statement_kwh). `statement_import` is the predicate on
+    a half-hour's start that says it is on Agile (billing_context), None for no Agile; such a
+    half-hour's kWh, £ ex VAT and £ inc VAT are taken at that kWh. Every other half-hour — an
+    Intelligent statement charges Octopus's own cost, unrounded — is summed as stored."""
     from collections import defaultdict as _dd
     import vat_calendar as _vc
     _local_day = _vc.local_day_fn()     # 17,520 half-hours a year (#48, 2 Oct 2026)
@@ -267,6 +274,12 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
         kwh = imp.get("kwh") or 0
         if not kwh:
             continue
+        _scale, _rawk = None, float(kwh)
+        if statement_import is not None and statement_import(start):
+            import statement_kwh as _sk
+            _k2 = _sk.statement_kwh(kwh)
+            _scale = _k2 / _rawk               # the stored £ are the rate × the raw kWh
+            kwh = _k2
         tot_kwh += kwh
         inc_rate = imp.get("rate")
         c, ce = imp.get("cost"), imp.get("cost_exc")
@@ -281,7 +294,7 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
         elif c is not None:
             xc = float(c) / (1.0 + bvat)
         elif inc_rate is not None:
-            xc = kwh * (float(inc_rate) / (1.0 + bvat))
+            xc = _rawk * (float(inc_rate) / (1.0 + bvat))
         else:
             continue
         # Inc cost for this slot — paired with xc so the VAT amount is inc − exc (exact
@@ -289,9 +302,12 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
         if c is not None:
             ic = float(c)
         elif inc_rate is not None:
-            ic = kwh * float(inc_rate)
+            ic = _rawk * float(inc_rate)
         else:
             ic = xc * (1.0 + bvat)
+        if _scale is not None:
+            xc *= _scale
+            ic *= _scale
         # Band by the CLEAN inc-rate tariff band (not the per-slot derived exc rate, which
         # jitters with Octopus's per-slot rounding) — WITH its VAT, so the displayed exc
         # rate is inc ÷ (1 + that half-hour's VAT).
@@ -1334,11 +1350,17 @@ def billing_context(cfg, store, blocks, has_exc=None):
         if not has_exc:
             _bill_rounding = False
 
+    # An Agile statement prices each half-hour's kWh to 0.01, half to even (statement_kwh): the
+    # agreements on Agile, import and export, for the statement method only.
+    import agile_bill as _ab
+    _agile = _ab.agile_predicates(store) if _bill_rounding else {"import": None, "export": None}
+
     return {"meter_colors": meter_colors, "meter_rate_dashed": meter_rate_dashed,
             "ev_phys_id": _ev_phys_id,
             "ev_slot_map": _ev_slot_map, "ev_fold_devices": _ev_fold_devices,
             "ev_label": _ev_label, "ev_day_map": _ev_day_map,
-            "bill_rounding": _bill_rounding, "vat_learned": _vat_learned}
+            "bill_rounding": _bill_rounding, "vat_learned": _vat_learned,
+            "agile_import": _agile["import"], "agile_export": _agile["export"]}
 
 
 def vat_at(ctx, when):
@@ -1358,12 +1380,15 @@ def period_summary(ctx, blocks_for_calc, period_blocks, period_start, period_end
     `period_blocks` must be the period's own blocks — the EV split and the bill method
     sum over them unfiltered. `bill_rows`, BlockStore.get_bill_rows' `(rows, segments)`,
     is the summary's input in place of `blocks_for_calc` when given (#48)."""
+    # an Agile export's credit as the statement prices it (statement_kwh); the statement method only
+    _rx = ctx.get("agile_export") if ctx.get("bill_rounding") else None
     if bill_rows is not None:
         _sm = summarise_bill_rows(*bill_rows, period_start, period_end,
-                                  store=store, tz_name=tz_name)
+                                  store=store, tz_name=tz_name, statement_export=_rx)
     else:
         _sm = calculate_billing_summary_for_period(
-            blocks_for_calc, period_start, period_end, store=store, tz_name=tz_name)
+            blocks_for_calc, period_start, period_end, store=store, tz_name=tz_name,
+            statement_export=_rx)
     if ctx["ev_slot_map"]:
         _inject_ev_breakdown_into_summary(_sm, period_blocks, ctx["ev_slot_map"],
                                           label=ctx["ev_label"], fold_devices=ctx["ev_fold_devices"])
@@ -1372,7 +1397,8 @@ def period_summary(ctx, blocks_for_calc, period_blocks, period_start, period_end
         # `vat_at(ctx, w)` per slot, with the calendar merged once (#48, 2 Oct 2026).
         _bm = _bill_method_breakdown(period_blocks, period_vat=vat_at(ctx, period_start),
                                      standing_inc_by_day=_sm.get("standing"),
-                                     vat_at=_vcal.rate_lookup(ctx["vat_learned"]))
+                                     vat_at=_vcal.rate_lookup(ctx["vat_learned"]),
+                                     statement_import=ctx.get("agile_import"))
         if _bm:
             _sm["bill_method"] = _bm
     return _sm

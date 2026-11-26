@@ -89,7 +89,11 @@ and `HA_PUBLIC_URL` says where the browser reaches Home Assistant. The design:
   With `include=net_cost`, each period's total is each local day's net to the penny, summed — except
   `kind=live`'s *This Bill*, which is the Billing card's Total Bill (`bill_card.bill_total`): the
   statement's rounding, import and standing rounded once less the export credit. The two can differ by
-  pennies; the Overview card matches the Billing tab (22 Nov 2026).
+  pennies; the Overview card matches the Billing tab (22 Nov 2026). On Agile the Billing tab's cards take
+  each half-hour at the statement's kWh (`statement_kwh`), so for every kind but `live` each day's net takes
+  what that moves it by (`agile_bill.statement_day_adjustments`), and a label stays within pennies of its
+  card; Today and This Year stay what was used. This Bill carries `statement_rounded` — its period has
+  Agile half-hours — for the card's **?**: its total is the statement's, its rows the meter's (26 Nov 2026).
 
 ## Route families
 
