@@ -688,6 +688,13 @@ body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
   color: var(--muted);
   margin-bottom: 10px;
 }
+/* This Bill's ? on Agile: the total is the statement's, the rows the meter's */
+.bill-q { margin-left: 6px; width: 18px; height: 18px; padding: 0; border-radius: 50%; font-size: 12px; line-height: 16px;
+  border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: help; vertical-align: 1px; }
+.bill-q:hover, .bill-q:focus-visible, .bill-q[aria-expanded="true"] { color: var(--text); border-color: var(--muted); }
+.bill-qn { font-size: 12px; line-height: 1.4; color: var(--muted); margin: -6px 0 10px; }
+.bill-qn a { color: var(--accent); }
+.ov-costs-row.compact .bill-qn { flex-basis: 100%; margin: 2px 0 0; }
 
 .billing-rows {
   display: flex;
@@ -3096,7 +3103,7 @@ function refreshBilling() {
       (d.periods || []).forEach(function(p) { P[p.key] = p; });
       BILL_CARDS.forEach(function(c) {
         var p = P[c[1]];
-        if (p) updateBillingCard(c[0], p.net_cost, p.rows, p.label, BILL_CURRENCY);
+        if (p) updateBillingCard(c[0], p.net_cost, p.rows, p.label, BILL_CURRENCY, !!p.statement_rounded);
       });
       if (tok) _billToken = tok;
       _billRedrawPill();
@@ -3121,7 +3128,35 @@ function _billRowsHtml(rows, currency) {
   }).join('');
 }
 
-function updateBillingCard(id, total, rows, period, currency) {
+// This Bill on Agile (26 Nov 2026, the user): its total is the statement's — each half-hour's kWh to 0.01 —
+// and its rows the meter's, so they can differ by tens of pence. A ? says so: hover for the title, a tap or
+// Enter opens one line under the period (the card clips anything floating).
+var BILL_Q_TEXT = 'The total is as Octopus bills Agile: each half-hour\'s kWh rounded to 0.01. '
+  + 'The lines are what the meter measured, as Usage Stats shows.';
+function _billQ(id, on) {
+  var periodEl = document.getElementById('billing-period-' + id);
+  if (!periodEl) return;
+  var q = document.getElementById('billing-q-' + id), note = document.getElementById('billing-qn-' + id);
+  if (!on) { if (q) q.remove(); if (note) note.remove(); return; }
+  if (!q) {
+    q = document.createElement('button');
+    q.type = 'button'; q.id = 'billing-q-' + id; q.className = 'bill-q';
+    q.textContent = '?'; q.title = BILL_Q_TEXT; q.setAttribute('aria-label', BILL_Q_TEXT);
+    q.setAttribute('aria-expanded', 'false');
+    q.onclick = function() {
+      var n = document.getElementById('billing-qn-' + id);
+      if (n) { n.remove(); q.setAttribute('aria-expanded', 'false'); return; }
+      n = document.createElement('div');
+      n.id = 'billing-qn-' + id; n.className = 'bill-qn';
+      n.innerHTML = _billEsc(BILL_Q_TEXT) + ' <a href="' + apiUrl('/help/how-emt-counts') + '#kept-and-billed">Why</a>';
+      periodEl.insertAdjacentElement('afterend', n);
+      q.setAttribute('aria-expanded', 'true');
+    };
+  }
+  periodEl.appendChild(q);                         // after the period's text, which a refresh rewrites
+}
+
+function updateBillingCard(id, total, rows, period, currency, rounded) {
   if (typeof total !== 'number') return;          // no figure: leave the card as it is
   var totalEl   = document.getElementById('billing-total-' + id);
   var periodEl  = document.getElementById('billing-period-' + id);
@@ -3135,12 +3170,14 @@ function updateBillingCard(id, total, rows, period, currency) {
       + _billEsc(text) + '</div>'
       + '<div class="billing-period" id="billing-period-' + id + '">' + _billEsc(period || '') + '</div>'
       + '<div class="billing-rows" id="billing-rows-' + id + '">' + _billRowsHtml(rows, currency) + '</div>';
+    _billQ(id, rounded);
     return;
   }
   if (!totalEl) return;
   totalEl.textContent = text;
   if (periodEl) periodEl.textContent = period || '';
   if (rowsEl && rows) rowsEl.innerHTML = _billRowsHtml(rows, currency);
+  _billQ(id, rounded);
 }
 
 function scheduleBillingRefresh() {

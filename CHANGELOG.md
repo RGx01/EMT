@@ -7,6 +7,14 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **The bill card matches an Agile statement.** Octopus prices each Agile half-hour at its rate × its kWh
+  rounded to 0.01 kWh, so a half-hour of a few watt-hours — a home running from its battery has hundreds a
+  month — costs nothing on the statement. The bill card, and the Overview's This Bill, now round the same way
+  on Agile and Agile Outgoing, and match the statement. What EMT keeps, and Usage Stats, stay the meter's
+  measured kWh, so on Agile the two can differ by tens of pence a month: a new section of *How EMT counts*
+  explains which to compare with your statement. Intelligent statements charge Octopus's own cost, as before.
+  The Billing tab's period list rounds the same way, so each label matches its card, and on Agile This Bill
+  has a small **?** saying its lines are the meter's. Today and This Year stay what you used.
 - **Retry settlement asks for the bill too.** The settlement pill's *Retry settlement* fetched the meter's
   half-hours and stopped there: a day it settled stayed an estimate until the hourly check asked for its
   bill. It now asks for the bill straight after, and the pill says "Asking Octopus…" until both are in.

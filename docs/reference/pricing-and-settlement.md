@@ -141,3 +141,24 @@ the asker has given up on, and on an Intelligent tariff replaces a correction.
 A CSV import (PDF bills build CSVs) fills missing half-hours, and leaves held ones — except that a
 settled Intelligent half-hour with no bill and no correction, whose CSV kWh is its settled kWh, takes
 the CSV's cost as an `IMPORTED` bill, its block untouched; it is then banded from it and reads grey.
+
+## What is stored, and what the bill card shows
+
+A half-hour is stored as it happened: the meter's kWh (Octopus reads to 0.001 kWh) and its cost — the
+bill's (`rate_source='measured'`) or `settle()`'s kWh × rate. Every surface but the bill card reads the
+stored figures. The bill card (`period_summary` → `_bill_method_breakdown`, and `bill_card.bill_total` for
+the Overview's This Bill) is the statement's method: ex VAT summed raw, each line rounded once, VAT on
+top — and, on **Agile**, each half-hour's kWh rounded to 0.01 **half to even** before pricing
+(`statement_kwh`, 26 Nov 2026). The Agile agreements (the AGILE family by tariff code, Agile Outgoing
+included) are read in `billing_context` (`agile_bill`); the import is rounded in `_bill_method_breakdown`, the main
+meter's export in `billing._summarise` (`statement_export`). `main_export_raw` and the stored figures stay
+the meter's.
+
+Why: a beta tester's Agile statement priced every half-hour at its rate × that kWh — the rule reproduced
+all 1,440 of a month's half-hours and its totals — and a battery home's hundreds of few-watt-hour
+half-hours a month are charged nothing, so the card read above the statement. An Intelligent
+statement prints its kWh rounded half up but charges Octopus's own cost, which EMT stores as it is: the
+user's own Mar–Aug 2026 statements match EMT's stored costs within 1p a month, and rounding would move
+them away. The help page *How EMT counts* explains the difference to users (`#kept-and-billed`).
+The Billing tab's picker labels take the same rounding by the day, and the Overview's This Bill, whose
+rows are the meter's, shows a **?** on Agile ([api.md](api.md)); Today and This Year are what was used.

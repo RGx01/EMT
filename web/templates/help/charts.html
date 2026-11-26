@@ -5,7 +5,10 @@
   <div class="card-title">📊 Billing</div>
   <p>
     Your bill, a billing period at a time — or a month, quarter or year — with the arrows to move
-    between them. The bill card sets out what the period cost, line by line, as a bill does.
+    between them. The bill card sets out what the period cost, line by line, as a bill does — on Agile
+    with the statement's own rounding, so it can sit a little below Usage Stats
+    (<a href="{{ url_for('help_section', section='how-emt-counts') }}#kept-and-billed">what EMT keeps, and
+    what the bill shows</a>).
   </p>
   <ul>
     <li><strong>vs Prev</strong> and <strong>vs Last Year</strong> set the period beside the one before,
@@ -31,6 +34,11 @@
 
 <div class="card help-section">
   <div class="card-title">📈 Usage Stats</div>
+  <p>
+    Usage Stats shows what you used: the meter's kWh and each half-hour's cost as EMT keeps them. It is
+    not rounded the way a statement is, so on Agile its totals can sit a little above the bill card
+    (<a href="{{ url_for('help_section', section='how-emt-counts') }}#kept-and-billed">why</a>).
+  </p>
   <p>Four views, chosen under <strong>Show</strong>:</p>
   <h3>Devices</h3>
   <ul>
