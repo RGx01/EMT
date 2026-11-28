@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Billing's day charts: the cost on the hover.** Hovering a half-hour gave each bar's kWh only. Each now
+  has its cost in brackets after it, and the hover's last line is the half-hour's total import and its cost.
+  A half-hour not priced yet shows no cost.
 - **The bill card matches an Agile statement.** Octopus prices each Agile half-hour at its rate × its kWh
   rounded to 0.01 kWh, so a half-hour of a few watt-hours — a home running from its battery has hundreds a
   month — costs nothing on the statement. The bill card, and the Overview's This Bill, now round the same way

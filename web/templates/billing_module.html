@@ -252,6 +252,25 @@ window.EMTBilling = (function () {
     } else { x.fillStyle = color; x.fillRect((KEY_W - 14) / 2, 1, 14, KEY_H - 2); }
     return (keyMarks[k] = c);
   }
+  // A hover line: a rate at its price; a bar at its kWh, with the half-hour's cost for it in brackets where
+  // it has one (none on a half-hour not priced, or a meter without rates). The half-hour's import total, with
+  // its cost, is the hover's last line, once. Under a penny to four places, as a rate is, so it does not
+  // read £0.00.
+  function hoverCost(cur, c) {
+    return (c != null && isFinite(c) && Math.abs(c) >= 5e-7) ? ' (' + (c < 0 ? '\u2212' : '') + cur + Math.abs(c).toFixed(Math.abs(c) < 0.01 ? 4 : 2) + ')' : '';
+  }
+  function hoverLabel(d, it) {
+    var m = it.dataset._meter, v = it.raw.y, cur = d.currency;
+    if (it.dataset._rate) return m.nice_name + ' rate: ' + cur + v.toFixed(4);
+    var c = (m.cost || [])[it.raw.x];
+    return m.nice_name + ': ' + Math.abs(v).toFixed(3) + ' kWh' + hoverCost(cur, m.is_export ? Math.abs(c) : c);
+  }
+  function hoverFooter(d, total, items) {
+    var it = items.filter(function (x) { return !x.dataset._rate; })[0];
+    if (!it) return '';
+    var i = it.raw.x;
+    return 'Total import: ' + total[i].toFixed(3) + ' kWh' + hoverCost(d.currency, (d.ti_cost || [])[i]);
+  }
   function buildChart(day) {
     var row = state.cur && state.cur.dayRows[day], el = state.section && state.section.querySelector('[data-day="' + day + '"] .chart-container');
     if (!row || !el || state.charts[day]) return;
@@ -302,12 +321,8 @@ window.EMTBilling = (function () {
               var x = items[0].raw.x, i = items[0].dataset._rate ? Math.round(x + 0.5) : x;
               return d.x_ranges[Math.min(n - 1, Math.max(0, i))];
             },
-            label: function (it) {
-              var m = it.dataset._meter, v = it.raw.y;
-              if (it.dataset._rate) return m.nice_name + ' rate: ' + cur + v.toFixed(4);
-              var i = it.raw.x;
-              return m.nice_name + ': ' + Math.abs(v).toFixed(3) + ' kWh' + (m.is_export ? '' : ' (' + total[i].toFixed(3) + ' total)');
-            }}}
+            label: function (it) { return hoverLabel(d, it); },
+            footer: function (items) { return hoverFooter(d, total, items); }}}
         },
         scales: {
           x: {type: 'linear', min: -0.5, max: n - 0.5, stacked: true, grid: {display: false},
