@@ -16,6 +16,28 @@
     <li><strong>Censor</strong> blurs the meter number, the readings and the site's name, for a screenshot.</li>
     <li><strong>Show Data</strong> shows or hides every day's data table.</li>
     <li>Each day has a chart: its half-hours' kWh as bars, a device each, and the rate as a line.</li>
+    <li id="ev-on-the-charts"><strong>The car's share</strong>, on Intelligent Octopus Go. Where Octopus has
+      split a half-hour between the car and the house, the car is Octopus's figure; until then it is the car's
+      energy in the dispatch, which EMT records as it happens. The bill card's breakdown shows the same.
+      <ul>
+        <li><strong>With an EV charger set up as a device</strong>, a half-hour with neither — a bump charge,
+          a dispatch EMT was not running for, or a tariff Octopus does not split — takes the charger's own
+          meter.</li>
+        <li><strong>Without one</strong>, such a half-hour shows no car: its charging is in the house's
+          Direct import. Settled half-hours are Octopus's split.</li>
+        <li><strong>Either way</strong>, the other devices take their share of the grid first: in a half-hour
+          where the battery charged from the grid while the car did, the import cannot hold both Octopus's
+          figure for the car and what the battery's meter took, so the car is held to what is left. The
+          battery keeps what its meter measured; the half-hour's import and cost are unchanged. On one rate
+          the car shows a few hundredths of a kWh, and a fraction of a penny, less than Octopus's split.
+          Where the car and the battery were on different rates — the car over the
+          <strong>6-hour cap</strong>, at the peak rate, beside a battery charging at a cheaper one — and a
+          charger is set up, the car's kWh held back leave it at the battery's rate, not the car's, so its
+          price per kWh can read a little above its rate.</li>
+      </ul>
+      Octopus's own breakdown, half-hour by half-hour, is in
+      <a href="https://github.com/RGx01/EMT-lite" target="_blank" rel="noopener">EMT-Lite</a>, which shows a
+      half-hour Octopus hasn't split yet as <em>Not split yet</em>, and no car on a tariff it never splits.</li>
     <li><strong>Correcting a rate</strong> — without the supplier API, right-click a day's chart (a long
       press on a phone) to correct a half-hour's rate or the day's standing charge. With Octopus
       connected the bill is Octopus's, so there is nothing to correct.</li>
@@ -37,7 +59,8 @@
   <p>
     Usage Stats shows what you used: the meter's kWh and each half-hour's cost as EMT keeps them. It is
     not rounded the way a statement is, so on Agile its totals can sit a little above the bill card
-    (<a href="{{ url_for('help_section', section='how-emt-counts') }}#kept-and-billed">why</a>).
+    (<a href="{{ url_for('help_section', section='how-emt-counts') }}#kept-and-billed">why</a>). Its car
+    is the day charts' (<a href="#ev-on-the-charts">the car's share</a>).
   </p>
   <p>Four views, chosen under <strong>Show</strong>:</p>
   <h3>Devices</h3>
